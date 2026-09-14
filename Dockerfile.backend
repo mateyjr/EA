@@ -11,7 +11,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential libjpeg-dev zlib1g-dev curl \
     && rm -rf /var/lib/apt/lists/*
 
-COPY backend/requirements.txt /app/requirements.txt
+COPY backend/requirements.deploy.txt /app/requirements.txt
 RUN pip install --upgrade pip && pip install -r /app/requirements.txt
 
 COPY backend /app/backend

@@ -1,0 +1,37 @@
+# Curated production dependency list for the on-prem Docker build.
+# Kept minimal & wheel-friendly for python:3.11-slim. Dev env keeps
+# using /app/backend/requirements.txt (auto-generated pip freeze).
+
+# --- Web framework ---
+fastapi==0.110.1
+uvicorn[standard]==0.25.0
+starlette==0.37.2
+python-multipart==0.0.20
+
+# --- Data & config ---
+pydantic==2.9.2
+pydantic-settings==2.6.1
+email-validator==2.2.0
+python-dotenv==1.0.1
+
+# --- MongoDB ---
+motor==3.6.0
+pymongo==4.9.2
+
+# --- Auth ---
+bcrypt==4.2.1
+PyJWT==2.9.0
+
+# --- HTTP clients ---
+httpx==0.27.2
+requests==2.32.3
+
+# --- Scheduled jobs ---
+APScheduler==3.10.4
+
+# --- Reports (PDF/XLSX) ---
+reportlab==4.2.5
+openpyxl==3.1.5
+
+# --- Corporate LDAP / AD ---
+ldap3==2.9.1
