@@ -1265,7 +1265,182 @@ async def send_now(sid: str, user: dict = Depends(get_current_user)):
     await db.subscriptions.update_one({"id": sid}, {"$set": {"last_sent_at": datetime.now(timezone.utc).isoformat(), "last_email_id": eid}})
     return {"ok": True, "email_id": eid, "dry_run": eid == "dry-run"}
 
-# ---------- LDAP / Directory sign-in (demo) ----------
+# ---------- LDAP / Directory Sign-in (admin-configurable) ----------
+LDAP_ROLES = ["admin", "lead_architect", "domain_architect", "reviewer", "viewer"]
+
+class LdapSettings(BaseModel):
+    enabled: bool = False
+    server_url: str = ""  # e.g. ldaps://ad.example.local:636
+    start_tls: bool = False
+    verify_cert: bool = True
+    ca_cert_pem: Optional[str] = None  # optional CA chain
+    bind_dn: str = ""  # service account
+    bind_password: str = ""  # write-only
+    user_search_base: str = ""
+    user_filter: str = "(&(objectCategory=person)(objectClass=user)({attr}={username}))"
+    login_attribute: str = "sAMAccountName"
+    email_attribute: str = "mail"
+    name_attribute: str = "displayName"
+    default_role: str = "viewer"
+    group_role_mappings: List[Dict[str, str]] = []  # [{"group_dn": "CN=EAMS-Admins,...", "role": "admin"}]
+    connect_timeout: int = 5
+    updated_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+
+async def get_ldap_settings() -> dict:
+    doc = await db.ldap_settings.find_one({"_id": "singleton"}, {"_id": 0})
+    if not doc:
+        doc = LdapSettings().model_dump()
+        await db.ldap_settings.insert_one({"_id": "singleton", **doc})
+    return doc
+
+def _mask_ldap(cfg: dict) -> dict:
+    out = {k: v for k, v in cfg.items() if k != "bind_password"}
+    out["bind_password_set"] = bool(cfg.get("bind_password"))
+    return out
+
+@api.get("/admin/ldap")
+async def admin_get_ldap(user: dict = Depends(get_current_user)):
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin only")
+    cfg = await get_ldap_settings()
+    return _mask_ldap(cfg)
+
+@api.put("/admin/ldap")
+async def admin_put_ldap(body: LdapSettings, user: dict = Depends(get_current_user)):
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin only")
+    cur = await get_ldap_settings()
+    payload = body.model_dump()
+    # Preserve stored password when caller sends empty
+    if not payload.get("bind_password"):
+        payload["bind_password"] = cur.get("bind_password", "")
+    for m in payload.get("group_role_mappings", []):
+        if m.get("role") not in LDAP_ROLES:
+            raise HTTPException(status_code=400, detail=f"Invalid role: {m.get('role')}")
+    payload["updated_at"] = datetime.now(timezone.utc).isoformat()
+    await db.ldap_settings.update_one({"_id": "singleton"}, {"$set": payload}, upsert=True)
+    await audit(user, "update_ldap_settings", "ldap", "admin", _mask_ldap(cur), _mask_ldap(payload))
+    return _mask_ldap(payload)
+
+def _build_ldap_server(cfg: dict):
+    from ldap3 import Server, Tls
+    import ssl, tempfile
+    if not cfg.get("server_url"):
+        raise HTTPException(status_code=400, detail="LDAP not configured")
+    url = cfg["server_url"].strip()
+    use_ssl = url.lower().startswith("ldaps://")
+    tls = None
+    if use_ssl or cfg.get("start_tls"):
+        ca_file = None
+        if cfg.get("ca_cert_pem"):
+            f = tempfile.NamedTemporaryFile(mode="w", suffix=".pem", delete=False)
+            f.write(cfg["ca_cert_pem"]); f.close()
+            ca_file = f.name
+        tls = Tls(
+            validate=ssl.CERT_REQUIRED if cfg.get("verify_cert", True) else ssl.CERT_NONE,
+            ca_certs_file=ca_file,
+        )
+    return Server(url, use_ssl=use_ssl, tls=tls, connect_timeout=int(cfg.get("connect_timeout") or 5), get_info=None)
+
+def _ldap_authenticate_sync(cfg: dict, username: str, password: str) -> dict:
+    from ldap3 import Connection, SIMPLE, SUBTREE
+    from ldap3.utils.conv import escape_filter_chars
+    from ldap3.core.exceptions import LDAPCommunicationError, LDAPSocketOpenError, LDAPBindError
+    server = _build_ldap_server(cfg)
+    safe_username = escape_filter_chars(username)
+    attr = cfg.get("login_attribute", "sAMAccountName")
+    user_filter = (cfg.get("user_filter") or "(&(objectCategory=person)(objectClass=user)({attr}={username}))").format(attr=attr, username=safe_username)
+    email_attr = cfg.get("email_attribute", "mail")
+    name_attr = cfg.get("name_attribute", "displayName")
+    svc = None
+    try:
+        svc = Connection(
+            server,
+            user=cfg.get("bind_dn") or None,
+            password=cfg.get("bind_password") or None,
+            authentication=SIMPLE if cfg.get("bind_dn") else None,
+            auto_bind=False, read_only=True, receive_timeout=int(cfg.get("connect_timeout") or 5),
+        )
+        if cfg.get("start_tls"): svc.start_tls()
+        if not svc.bind():
+            raise HTTPException(status_code=502, detail=f"LDAP service bind failed: {svc.last_error}")
+        svc.search(
+            cfg.get("user_search_base") or "",
+            user_filter, search_scope=SUBTREE,
+            attributes=["distinguishedName", attr, email_attr, name_attr, "memberOf"],
+        )
+        if len(svc.entries) != 1:
+            raise HTTPException(status_code=401, detail="Invalid corporate credentials")
+        e = svc.entries[0]
+        user_dn = e.entry_dn
+        # Bind AS THE USER to verify password (never trust svc account for auth check)
+        user_conn = Connection(server, user=user_dn, password=password, authentication=SIMPLE, read_only=True, receive_timeout=int(cfg.get("connect_timeout") or 5))
+        if cfg.get("start_tls"): user_conn.start_tls()
+        if not user_conn.bind():
+            raise HTTPException(status_code=401, detail="Invalid corporate credentials")
+        try: groups = {str(g) for g in (e.memberOf.values if hasattr(e, "memberOf") else [])}
+        except Exception: groups = set()
+        try: email = str(getattr(e, email_attr).value) if hasattr(e, email_attr) else None
+        except Exception: email = None
+        try: display = str(getattr(e, name_attr).value) if hasattr(e, name_attr) else username
+        except Exception: display = username
+        # Role from group mappings (case-insensitive DN compare)
+        role = cfg.get("default_role") or "viewer"
+        role_priority = {"admin": 4, "lead_architect": 3, "domain_architect": 2, "reviewer": 1, "viewer": 0}
+        gset_lower = {g.lower() for g in groups}
+        for m in cfg.get("group_role_mappings", []):
+            gdn = (m.get("group_dn") or "").lower()
+            if gdn and gdn in gset_lower and role_priority.get(m.get("role"), 0) > role_priority.get(role, 0):
+                role = m["role"]
+        return {"user_dn": user_dn, "username": username.lower(), "email": email, "name": display, "groups": list(groups), "role": role}
+    except HTTPException: raise
+    except (LDAPCommunicationError, LDAPSocketOpenError, TimeoutError, OSError) as ex:
+        raise HTTPException(status_code=503, detail=f"LDAP directory unreachable: {ex}")
+    except LDAPBindError as ex:
+        raise HTTPException(status_code=401, detail="Invalid corporate credentials")
+    finally:
+        try:
+            if svc: svc.unbind()
+        except Exception: pass
+
+@api.post("/admin/ldap/test")
+async def admin_ldap_test(body: Dict[str, Any], user: dict = Depends(get_current_user)):
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin only")
+    cfg = await get_ldap_settings()
+    # Merge overrides but keep stored password if none provided
+    for k, v in (body or {}).items():
+        if v not in (None, ""):
+            cfg[k] = v
+    test_username = (body or {}).get("test_username")
+    test_password = (body or {}).get("test_password")
+    if not test_username:
+        # Just verify service bind
+        try:
+            from ldap3 import Connection, SIMPLE
+            server = _build_ldap_server(cfg)
+            conn = Connection(server, user=cfg.get("bind_dn") or None, password=cfg.get("bind_password") or None,
+                              authentication=SIMPLE if cfg.get("bind_dn") else None, read_only=True,
+                              receive_timeout=int(cfg.get("connect_timeout") or 5))
+            if cfg.get("start_tls"): conn.start_tls()
+            ok = conn.bind()
+            err = None if ok else str(conn.last_error)
+            try: conn.unbind()
+            except Exception: pass
+            return {"ok": ok, "stage": "service_bind", "error": err}
+        except HTTPException as e: return {"ok": False, "stage": "service_bind", "error": e.detail}
+        except Exception as e: return {"ok": False, "stage": "service_bind", "error": str(e)}
+    # Full end-to-end test
+    try:
+        import asyncio as _asyncio
+        result = await _asyncio.to_thread(_ldap_authenticate_sync, cfg, test_username, test_password)
+        return {"ok": True, "stage": "full", "resolved_user": {k: result[k] for k in ("username", "email", "name", "role", "user_dn")}, "groups_found": len(result.get("groups", []))}
+    except HTTPException as e:
+        return {"ok": False, "stage": "full", "error": e.detail}
+    except Exception as e:
+        return {"ok": False, "stage": "full", "error": str(e)}
+
+# ---------- LDAP / Directory sign-in (public endpoint) ----------
 LDAP_DOMAIN = "colecle.corp"
 LDAP_USER_MAP = {
     # samAccountName / uid : local user email
@@ -1284,15 +1459,33 @@ async def ldap_login(body: LdapLoginIn, response: Response):
         uname = raw.split("@", 1)[0]
     else:
         uname = raw
-    uname = uname.lower()
-    # Preview-mode LDAP: authenticate against local users table by matching
-    # the localpart of their email to the samAccountName. Production would
-    # bind against a real LDAP server via python-ldap/ldap3.
-    user = await db.users.find_one({"email": {"$regex": f"^{uname}@", "$options": "i"}})
-    if not user:
-        # or match against LDAP_USER_MAP override
-        target = LDAP_USER_MAP.get(uname)
-        if target: user = await db.users.find_one({"email": target})
+    cfg = await get_ldap_settings()
+    if cfg.get("enabled") and cfg.get("server_url"):
+        # Real LDAP bind
+        import asyncio as _asyncio
+        result = await _asyncio.to_thread(_ldap_authenticate_sync, cfg, uname, body.password)
+        # Upsert local user (LDAP-sourced), tracked by email or ldap:<username>
+        email = (result.get("email") or f"{uname}@ldap.local").lower()
+        existing = await db.users.find_one({"email": email})
+        if existing:
+            await db.users.update_one({"email": email}, {"$set": {"name": result["name"], "role": result["role"], "auth_source": "ldap", "last_login": datetime.now(timezone.utc).isoformat(), "ldap_dn": result["user_dn"]}})
+            user = await db.users.find_one({"email": email}, {"_id": 0, "password_hash": 0})
+        else:
+            uid = str(uuid.uuid4())
+            user = {
+                "id": uid, "email": email, "name": result["name"], "role": result["role"],
+                "password_hash": hash_pw(secrets.token_hex(24)),  # unusable random password
+                "auth_source": "ldap", "ldap_dn": result["user_dn"],
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "last_login": datetime.now(timezone.utc).isoformat(),
+            }
+            await db.users.insert_one(user)
+        token = make_token(user["id"], user["email"], user["role"])
+        response.set_cookie("access_token", token, httponly=True, secure=True, samesite="none", max_age=60*60*24*7, path="/")
+        return {"id": user["id"], "email": user["email"], "name": user["name"], "role": user["role"], "token": token, "auth_method": "ldap"}
+    # Preview / not configured: local shadow fallback
+    uname_l = uname.lower()
+    user = await db.users.find_one({"email": {"$regex": f"^{uname_l}@", "$options": "i"}})
     if not user or not verify_pw(body.password, user["password_hash"]):
         raise HTTPException(status_code=401, detail="Invalid corporate credentials")
     token = make_token(user["id"], user["email"], user["role"])

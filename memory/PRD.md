@@ -31,3 +31,10 @@ Enterprise Architecture Management System for "Colecle" across six mandatory dom
 
 ## Credentials
 Admin: matey.willy@gmail.com / Colecle123! (matches LDAP username `matey.willy@colecle.corp`).
+
+### Iteration 4 — Real LDAP
+- Real LDAPS auth via `ldap3` — admin-configurable at `/admin/ldap` (server URL, CA cert PEM, service bind DN/password, user search base, login/email/name attributes, user filter template, default role, group→role mappings).
+- Test service bind + Run full test buttons for on-the-fly validation.
+- LDAP-authenticated users are upserted into the local user store; highest-priority AD group wins role.
+- Graceful fallback: if LDAP is disabled OR unreachable, `/auth/ldap` returns the appropriate error; local sign-in tab always works for break-glass admin access.
+- `ldap3` added to `requirements.txt`; no `.env` changes required — all settings live in Mongo `ldap_settings` singleton.

@@ -20,6 +20,7 @@ import Reports from "@/pages/Reports";
 import AuditConsole from "@/pages/AuditConsole";
 import DRCoverage from "@/pages/DRCoverage";
 import CapabilityHeatmap from "@/pages/CapabilityHeatmap";
+import LdapAdmin from "@/pages/LdapAdmin";
 
 function ProtectedShell({ children }) {
   const { user } = useAuth();
@@ -57,6 +58,7 @@ export default function App() {
               <Route path="/dr-coverage" element={<ProtectedShell><DRCoverage /></ProtectedShell>} />
               <Route path="/capabilities/heatmap" element={<ProtectedShell><CapabilityHeatmap /></ProtectedShell>} />
               <Route path="/admin/audit" element={<ProtectedShell><AuditConsole /></ProtectedShell>} />
+              <Route path="/admin/ldap" element={<ProtectedShell><LdapAdmin /></ProtectedShell>} />
               <Route path="/admin/brand" element={<ProtectedShell><AdminBrand /></ProtectedShell>} />
               <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>

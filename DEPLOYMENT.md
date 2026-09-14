@@ -130,6 +130,28 @@ and mount your cert & key into `/etc/caddy/certs`.
   runs email in dry-run (logs only). To enable real email delivery, either
   provision the key or replace `send_report_email` with an SMTP call using
   Python's `smtplib` (a 20-line change in `backend/server.py`).
-- **Corporate LDAP** — the login toggle authenticates against the local user
-  shadow. To bind against a real AD/LDAPS, add `ldap3` to `requirements.txt`
-  and replace the body of `/api/auth/ldap` in `backend/server.py`.
+
+## 12. Corporate LDAP / Active Directory
+
+The Corporate LDAP sign-in is **wired to a live directory** via `ldap3`. All
+settings are edited by an admin at `/admin/ldap` inside the app — no `.env`
+changes or restarts required. Configure:
+
+- Server URL (`ldaps://ad.bot.go.tz:636` recommended; `ldap://` works with StartTLS)
+- CA certificate chain (PEM) — paste into the textarea; leave blank to trust system CAs
+- Verify certificate toggle (keep ON for production)
+- Service bind DN + password (least-privileged read-only account)
+- User search base
+- Login attribute (`sAMAccountName` for AD, `uid` for OpenLDAP, `userPrincipalName`, etc.)
+- User filter template with `{attr}` and `{username}` placeholders
+- Default role for authenticated users (`viewer` by default)
+- Group DN → App role mappings (highest role wins: admin > lead_architect > domain_architect > reviewer > viewer)
+
+Use **Test service bind** first to validate connectivity, then **Run full test**
+with a real user to validate the search + user-bind + role mapping in one shot.
+
+Sign-in behaviour:
+
+- **Enabled**: `/api/auth/ldap` performs service bind → user search → bind-as-user → role mapping → JWT.
+- **Disabled** (default): the endpoint falls back to matching against local users (so the seeded admin can always break-glass in).
+- On successful LDAP sign-in, a local user record is upserted (email + name + role + `auth_source=ldap`) so downstream RBAC works unchanged.

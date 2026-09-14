@@ -7,7 +7,7 @@ import { api } from "@/lib/api";
 import {
   LayoutDashboard, GitBranch, ClipboardCheck, ScrollText, ShieldAlert,
   BookMarked, Settings, LogOut, Search, ChevronRight, Sparkles, Map,
-  FileText, History, ShieldOff, Grid3x3
+  FileText, History, ShieldOff, Grid3x3, Building2
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 
@@ -150,6 +150,7 @@ export default function AppShell({ children }) {
           <NavItem to="/reports" icon={FileText} label="Reports & Exports" testId="nav-reports" />
           <div className="pt-3 pb-1 px-2 text-eyebrow">Admin</div>
           <NavItem to="/admin/audit" icon={History} label="Audit Trail" testId="nav-audit" />
+          <NavItem to="/admin/ldap" icon={Building2} label="LDAP / Directory" testId="nav-ldap" />
           <NavItem to="/admin/brand" icon={Settings} label="Brand Settings" testId="nav-brand-settings" />
         </nav>
         <div className="p-3 border-t border-slate-800">
