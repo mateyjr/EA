@@ -13,6 +13,7 @@ services:
       retries: 5
 
   backend:
+    image: ${BACKEND_IMAGE:-}
     build:
       context: .
       dockerfile: Dockerfile.backend
@@ -41,6 +42,7 @@ services:
     networks: [colecle_net]
 
   frontend:
+    image: ${FRONTEND_IMAGE:-}
     build:
       context: .
       dockerfile: Dockerfile.frontend

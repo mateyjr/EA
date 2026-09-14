@@ -1,0 +1,117 @@
+name: Deploy Colecle EAMS
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAMESPACE: ${{ github.repository }}
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image_tag: ${{ steps.meta.outputs.image_tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compute image tag
+        id: meta
+        run: echo "image_tag=$(echo ${GITHUB_SHA} | cut -c1-7)" >> $GITHUB_OUTPUT
+
+      - name: Set lowercase namespace
+        run: echo "IMAGE_NAMESPACE_LC=$(echo '${{ env.IMAGE_NAMESPACE }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build & push backend
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.backend
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE_LC }}-backend:${{ steps.meta.outputs.image_tag }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE_LC }}-backend:latest
+          cache-from: type=gha,scope=backend
+          cache-to: type=gha,scope=backend,mode=max
+
+      - name: Build & push frontend
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.frontend
+          push: true
+          build-args: |
+            REACT_APP_BACKEND_URL=https://${{ vars.DOMAIN }}
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE_LC }}-frontend:${{ steps.meta.outputs.image_tag }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE_LC }}-frontend:latest
+          cache-from: type=gha,scope=frontend
+          cache-to: type=gha,scope=frontend,mode=max
+
+  deploy:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Copy compose + Caddyfile to host
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SSH_PORT || 22 }}
+          source: "docker-compose.yml,Caddyfile"
+          target: ${{ vars.DEPLOY_DIR || '/opt/colecle-eams' }}
+
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SSH_PORT || 22 }}
+          envs: IMAGE_TAG
+          script: |
+            set -euo pipefail
+            cd ${{ vars.DEPLOY_DIR || '/opt/colecle-eams' }}
+            IMG_NS=$(echo '${{ env.IMAGE_NAMESPACE }}' | tr '[:upper:]' '[:lower:]')
+            IMG_TAG='${{ needs.build-and-push.outputs.image_tag }}'
+
+            # Login to GHCR to pull private images
+            echo '${{ secrets.GHCR_READ_TOKEN }}' | docker login ghcr.io -u '${{ secrets.GHCR_READ_USER }}' --password-stdin
+
+            # Write / refresh .env from GitHub secrets & vars
+            cat > .env <<EOF
+            DOMAIN=${{ vars.DOMAIN }}
+            ACME_EMAIL=${{ vars.ACME_EMAIL }}
+            DB_NAME=${{ vars.DB_NAME || 'colecle_eams' }}
+            JWT_SECRET=${{ secrets.JWT_SECRET }}
+            WEBHOOK_CRON_SECRET=${{ secrets.WEBHOOK_CRON_SECRET }}
+            ADMIN_EMAIL=${{ secrets.ADMIN_EMAIL }}
+            ADMIN_PASSWORD=${{ secrets.ADMIN_PASSWORD }}
+            EMAIL_FROM_NAME=${{ vars.EMAIL_FROM_NAME || 'Colecle EAMS' }}
+            EMERGENT_EMAIL_KEY=${{ secrets.EMERGENT_EMAIL_KEY }}
+            BACKEND_IMAGE=ghcr.io/${IMG_NS}-backend:${IMG_TAG}
+            FRONTEND_IMAGE=ghcr.io/${IMG_NS}-frontend:${IMG_TAG}
+            EOF
+            chmod 600 .env
+
+            docker compose pull
+            docker compose up -d --remove-orphans
+            docker image prune -f
