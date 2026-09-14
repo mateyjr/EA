@@ -25,7 +25,7 @@ services:
     environment:
       MONGO_URL: mongodb://mongo:27017
       DB_NAME: ${DB_NAME:-colecle_eams}
-      CORS_ORIGINS: "https://${DOMAIN:-boteams-test.bot.go.tz}"
+      CORS_ORIGINS: ${CORS_ORIGINS:-*}
       JWT_SECRET: ${JWT_SECRET}
       ADMIN_EMAIL: ${ADMIN_EMAIL}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD}
@@ -35,7 +35,6 @@ services:
       STORAGE_MODE: local
       LOCAL_STORAGE_DIR: /data/uploads
       RUN_CRONS: "true"
-      # Optional: real email delivery (leave unset for dry-run logging)
       EMERGENT_EMAIL_KEY: ${EMERGENT_EMAIL_KEY:-}
     volumes:
       - uploads_data:/data/uploads
@@ -47,27 +46,13 @@ services:
       context: .
       dockerfile: Dockerfile.frontend
       args:
-        REACT_APP_BACKEND_URL: https://${DOMAIN:-boteams-test.bot.go.tz}
+        # Frontend calls same origin (nginx proxies /api to backend), so leave empty.
+        REACT_APP_BACKEND_URL: ""
     container_name: colecle_frontend
     restart: unless-stopped
     depends_on: [backend]
-    networks: [colecle_net]
-
-  caddy:
-    image: caddy:2-alpine
-    container_name: colecle_caddy
-    restart: unless-stopped
     ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy_data:/data
-      - caddy_config:/config
-    depends_on: [backend, frontend]
-    environment:
-      DOMAIN: ${DOMAIN:-boteams-test.bot.go.tz}
-      ACME_EMAIL: ${ACME_EMAIL:-admin@bot.go.tz}
+      - "${FRONTEND_PORT:-3003}:80"
     networks: [colecle_net]
 
 networks:
@@ -77,5 +62,3 @@ networks:
 volumes:
   mongo_data:
   uploads_data:
-  caddy_data:
-  caddy_config:

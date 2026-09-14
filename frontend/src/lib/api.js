@@ -1,7 +1,10 @@
 import axios from "axios";
 
-const BASE = process.env.REACT_APP_BACKEND_URL;
-export const API = `${BASE}/api`;
+// When REACT_APP_BACKEND_URL is empty (on-prem Docker build with nginx proxy),
+// requests go to same-origin /api/*. When set (preview / external backend),
+// requests go to `${BASE}/api/*` so cross-origin is possible.
+const BASE = process.env.REACT_APP_BACKEND_URL || "";
+export const API = BASE ? `${BASE}/api` : "/api";
 
 export const api = axios.create({ baseURL: API });
 
