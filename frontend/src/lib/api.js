@@ -15,8 +15,8 @@ api.interceptors.request.use((config) => {
   return config;
 });
 
-export function formatError(detail) {
-  if (detail == null) return "Something went wrong.";
+export function formatError(detail, fallback) {
+  if (detail == null) return fallback || "Something went wrong.";
   if (typeof detail === "string") return detail;
   if (Array.isArray(detail))
     return detail.map((e) => (e?.msg ? e.msg : JSON.stringify(e))).join(" ");

@@ -1,0 +1,20 @@
+{
+  "summary": "Regression verification of the on-prem HTTP login-failure fix. Verified (a) preview login still works and lands on dashboard with 6 domain KPI cards showing business:10, application:3, data:4, security:3, integration:3, technology:4 (matches spec), (b) AuthContext.login() now surfaces 'Cannot reach the API. Verify the backend is running and REACT_APP_BACKEND_URL is empty (same-origin) or matches this page's origin.' when the /api/auth/login call is aborted at the network layer (simulating axios Network Error) instead of the previous generic 'Something went wrong.', (c) no regression on /admin/ldap (renders with saved LDAP settings visible), (d) no regression on /reports (10 report cards + subscriptions panel present), (e) backend regression suite /app/backend/tests/test_eams_api.py: 15/15 passed in 4.51s.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": ["/app/backend/tests/test_eams_api.py", "/app/test_reports/pytest/pytest_results.xml"],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "AuthContext.login() correctly distinguishes 3 cases: API-returned detail (formatError), axios 'Network Error' (custom message), and other exceptions (fallback). Good.",
+    "api.js: BASE = process.env.REACT_APP_BACKEND_URL || ''; API = BASE ? `${BASE}/api` : '/api' - correctly supports both preview (cross-origin) and on-prem same-origin nginx proxy.",
+    "Dockerfile.frontend ARG REACT_APP_BACKEND_URL= (empty default) and .github/workflows/deploy.yml build-args now use vars.REACT_APP_BACKEND_URL with empty default - deploy-side fix is correct. To take effect on the user's host, they must (1) unset/blank the GH Variable REACT_APP_BACKEND_URL, (2) re-run the Deploy workflow so the new image is baked with empty BASE, and (3) docker compose pull && up -d on the host."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "100% (15/15 pytest)", "frontend": "100% (login + KPIs + network-error toast + /admin/ldap + /reports)"},
+  "test_credentials": "matey.willy@gmail.com / Colecle123!",
+  "seed_data_creation": "None",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Preview .env still has REACT_APP_BACKEND_URL set to the emergentagent.com URL so BASE is truthy and cross-origin axios path is exercised. To simulate the on-prem Network Error case in the browser, use page.route('**/api/auth/login', lambda r: r.abort()) - the toast should read 'Cannot reach the API...'. No regressions found.",
+  "rca of the issue": "Original user report was on http://boteams-test.bot.go.tz:3003 hitting 'Something went wrong.' RCA: GHA workflow baked REACT_APP_BACKEND_URL=https://boteams-test.bot.go.tz into the React bundle, so browser POSTed to https:// on an HTTP-only host -> axios Network Error -> generic toast. Fix in this iteration: (1) workflow build-args use vars.REACT_APP_BACKEND_URL defaulting to empty so bundle falls back to same-origin '/api', (2) Dockerfile ARG default empty, (3) AuthContext surfaces a clear Network-Error-specific message. All three verified in preview; the actual host recovery requires the deploy-side steps listed in critical_code_review_comments."
+}

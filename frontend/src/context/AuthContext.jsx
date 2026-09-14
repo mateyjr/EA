@@ -20,7 +20,13 @@ export function AuthProvider({ children }) {
       setUser(r.data);
       return { ok: true };
     } catch (e) {
-      return { ok: false, error: formatError(e.response?.data?.detail) || e.message };
+      const detail = e?.response?.data?.detail;
+      const err = detail != null
+        ? formatError(detail)
+        : (e?.message === "Network Error"
+            ? "Cannot reach the API. Verify the backend is running and REACT_APP_BACKEND_URL is empty (same-origin) or matches this page's origin."
+            : (e?.message || "Something went wrong."));
+      return { ok: false, error: err };
     }
   };
   const logout = async () => {

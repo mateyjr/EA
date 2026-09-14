@@ -53,7 +53,7 @@ jobs:
           file: Dockerfile.frontend
           push: true
           build-args: |
-            REACT_APP_BACKEND_URL=https://${{ vars.DOMAIN }}
+            REACT_APP_BACKEND_URL=${{ vars.REACT_APP_BACKEND_URL }}
           tags: |
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE_LC }}-frontend:${{ steps.meta.outputs.image_tag }}
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAMESPACE_LC }}-frontend:latest
