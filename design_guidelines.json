@@ -1,0 +1,169 @@
+{
+  "project_name": "Colecle System EAMS",
+  "app_type": "Enterprise Architecture Management System (EAMS Dashboard)",
+  "emotional_archetype": "Architectural Command & Precision (High Density, Calm, Authoritative)",
+  "design_philosophy": {
+    "principle_1": "Domain Color Spectrum - Every architectural domain (Business, Application, Data, Security, Integration, Technology) carries its immutable color and icon identity across badges, nodes, charts, tables, and impact graphs.",
+    "principle_2": "End-to-End Visual Traceability - Deep interconnectivity made tangible through reactive node graphs, breadcrumbs, and 360° detail views.",
+    "principle_3": "High-Density Calm - Structured Swiss-inspired grid layout with strict 1px border lines, subtle background fills, generous cell padding, and zero unnecessary decorative noise.",
+    "principle_4": "Proactive Governance - Workflows for Architecture Reviews, ADRs, Technical Debt, and Standards clearly surfaced via state-aware status pills and audit markers."
+  },
+  "typography": {
+    "heading_font": "Cabinet Grotesk / Outfit",
+    "body_font": "Plus Jakarta Sans / Inter",
+    "mono_font": "JetBrains Mono / Source Code Pro",
+    "scale": {
+      "h1": "text-3xl sm:text-4xl font-bold tracking-tight",
+      "h2": "text-2xl sm:text-3xl font-semibold tracking-tight",
+      "h3": "text-xl sm:text-2xl font-semibold tracking-tight",
+      "h4": "text-lg font-medium",
+      "body": "text-sm leading-relaxed text-slate-300 dark:text-slate-300 light:text-slate-700",
+      "caption": "text-xs font-mono uppercase tracking-wider text-slate-400"
+    },
+    "forbidden_fonts": ["Inter for headings", "Roboto for headings", "Space Grotesk"]
+  },
+  "six_domain_system": {
+    "Business": {
+      "name": "Business Domain",
+      "color_name": "amber",
+      "hex_primary": "#f59e0b",
+      "hex_bg": "rgba(245, 158, 11, 0.12)",
+      "hex_border": "rgba(245, 158, 11, 0.3)",
+      "badge_class": "bg-amber-500/10 text-amber-400 border-amber-500/30",
+      "icon_name": "Briefcase",
+      "scope": "Business Units, Capabilities, Processes, Process Steps, Value Streams"
+    },
+    "Application": {
+      "name": "Application Domain",
+      "color_name": "blue",
+      "hex_primary": "#3b82f6",
+      "hex_bg": "rgba(59, 130, 246, 0.12)",
+      "hex_border": "rgba(59, 130, 246, 0.3)",
+      "badge_class": "bg-blue-500/10 text-blue-400 border-blue-500/30",
+      "icon_name": "AppWindow",
+      "scope": "Application Portfolio, Services, Microservices, Systems, Lifecycle Status"
+    },
+    "Data": {
+      "name": "Data Domain",
+      "color_name": "emerald",
+      "hex_primary": "#10b981",
+      "hex_bg": "rgba(16, 185, 129, 0.12)",
+      "hex_border": "rgba(16, 185, 129, 0.3)",
+      "badge_class": "bg-emerald-500/10 text-emerald-400 border-emerald-500/30",
+      "icon_name": "Database",
+      "scope": "Data Entities, Data Catalogs, Schemas, Data Flows, Governance & Classification"
+    },
+    "Security": {
+      "name": "Security Domain",
+      "color_name": "red",
+      "hex_primary": "#ef4444",
+      "hex_bg": "rgba(239, 68, 68, 0.12)",
+      "hex_border": "rgba(239, 68, 68, 0.3)",
+      "badge_class": "bg-red-500/10 text-red-400 border-red-500/30",
+      "icon_name": "Shield",
+      "scope": "Security Controls, Compliance Rules, Threat Models, Access Governance, Policies"
+    },
+    "Integration": {
+      "name": "Integration Domain",
+      "color_name": "violet",
+      "hex_primary": "#8b5cf6",
+      "hex_bg": "rgba(139, 92, 246, 0.12)",
+      "hex_border": "rgba(139, 92, 246, 0.3)",
+      "badge_class": "bg-violet-500/10 text-violet-400 border-violet-500/30",
+      "icon_name": "Network",
+      "scope": "APIs, Event Streams, Message Queues, Middleware, ETL Connectors"
+    },
+    "Technology": {
+      "name": "Technology Domain",
+      "color_name": "slate",
+      "hex_primary": "#64748b",
+      "hex_bg": "rgba(100, 116, 139, 0.15)",
+      "hex_border": "rgba(100, 116, 139, 0.35)",
+      "badge_class": "bg-slate-500/10 text-slate-300 border-slate-500/30",
+      "icon_name": "Server",
+      "scope": "Infrastructure, Servers, Cloud Services, Racks, Tech Stack & Lifecycle"
+    }
+  },
+  "colors": {
+    "mode": "hybrid_adaptive",
+    "theme_bg_dark": "#0b0f17",
+    "theme_card_dark": "#111827",
+    "theme_card_border_dark": "#1f2937",
+    "theme_bg_light": "#f8fafc",
+    "theme_card_light": "#ffffff",
+    "theme_card_border_light": "#e2e8f0",
+    "text_primary_dark": "#f3f4f6",
+    "text_secondary_dark": "#9ca3af",
+    "forbidden_colors": ["#7351B7 (AI gradient slop)", "#1B93A4 (Teal green dashboard slop)"]
+  },
+  "layout_and_navigation": {
+    "sidebar": {
+      "width": "w-64",
+      "branding_area": "Contains Colecle logo image/icon + editable Brand Name ('Colecle System EAMS')",
+      "nav_sections": [
+        "Global Dashboard",
+        "Domain Repositories (Business, Application, Data, Security, Integration, Technology)",
+        "Architecture Map & Visualizer",
+        "Traceability & Impact Engine",
+        "360° Object Explorer",
+        "Architecture Reviews & Governance",
+        "ADRs (Decision Records)",
+        "Standards, Risks & Tech Debt",
+        "Reports & Analytics",
+        "Admin & Brand Settings"
+      ]
+    },
+    "topbar": {
+      "height": "h-16",
+      "elements": [
+        "Global Architecture Search (Cmd+K / Ctrl+K with quick domain jump)",
+        "Active Domain Quick Selector Filter",
+        "Quick Action (+ New ADR, + New Architectural Review)",
+        "System Health Indicator & Audit Trail shortcut",
+        "User Profile Menu with Role Badge (e.g., Enterprise Architect, Admin, Lead Architect)"
+      ]
+    }
+  },
+  "key_features_design": {
+    "brand_settings": {
+      "path": "/admin/brand",
+      "controls": "Editable Brand Name, Subtitle, Custom Logo URL / Image Upload, Primary Accent Override, Preview Banner across Sidebar and Topbar"
+    },
+    "traceability_impact_graph": {
+      "style": "React Flow style dynamic graph node layout",
+      "node_colors": "Strictly inherits domain colors (e.g., Business=Amber, App=Blue, Data=Emerald, Security=Red, Integration=Violet, Tech=Slate)",
+      "interactions": "Click node for 360° slide-over, Toggle Forward/Reverse impact analysis, Highlight critical path"
+    },
+    "architecture_360_view": {
+      "structure": "Hero Header with Domain Badge + Relationship Matrix + Upstream/Downstream Dependencies + Compliance & ADR History + Risk Radar"
+    },
+    "review_workflow": {
+      "stages": ["Draft", "Submitted", "Domain Reviews", "EA Review", "Committee", "Approved", "Rejected"],
+      "ui_style": "Horizontal stepped progress bar + approval action bar + comments timeline"
+    }
+  },
+  "testing_and_accessibility": {
+    "data_testid_policy": "All interactive elements, buttons, menu items, table rows, domain cards, graph nodes, and search inputs MUST include kebab-case data-testid attributes (e.g., data-testid='brand-logo', data-testid='domain-card-business', data-testid='global-search-input').",
+    "contrast_standard": "Minimum WCAG AA (4.5:1 ratio) on all body text and badges.",
+    "hover_rule": "Always explicitly define hover text colors matching or exceeding active state contrast."
+  },
+  "image_urls": [
+    {
+      "category": "Technology Infrastructure Hero",
+      "url": "https://images.unsplash.com/photo-1785682231847-93265d8e633d?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjAxODF8MHwxfHNlYXJjaHxfenterprise_architecture&q=85",
+      "description": "Server rack filled with network equipment for technology domain visualization"
+    },
+    {
+      "category": "Abstract Architectural Interface",
+      "url": "https://images.unsplash.com/photo-1761489717991-a69fe927032f?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjAxODF8MHwxfHNlYXJjaHxfdigital_interface&q=85",
+      "description": "Digital grid network background for EAMS background accents"
+    }
+  ],
+  "instructions_to_main_agent": [
+    "Ensure brand name 'Colecle' and logo are reactive to Admin Brand Settings stored in state/localStorage or backend API.",
+    "Strictly enforce domain colors in all lists, tags, chips, charts, and graph nodes.",
+    "Add data-testid attributes to all key components for reliable test suite automation.",
+    "Use JavaScript / JSX files (.js / .jsx) as defined in workspace rules.",
+    "Ensure dark mode is default or easily toggled with rich high-contrast colors."
+  ]
+}
