@@ -6,7 +6,8 @@ import { DOMAIN_LIST } from "@/lib/domains";
 import { api } from "@/lib/api";
 import {
   LayoutDashboard, GitBranch, ClipboardCheck, ScrollText, ShieldAlert,
-  BookMarked, Settings, LogOut, Search, ChevronRight, Sparkles, Map
+  BookMarked, Settings, LogOut, Search, ChevronRight, Sparkles, Map,
+  FileText, History
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 
@@ -143,7 +144,10 @@ export default function AppShell({ children }) {
           <NavItem to="/adrs" icon={BookMarked} label="Decisions (ADRs)" testId="nav-adrs" />
           <NavItem to="/standards" icon={ScrollText} label="Standards" testId="nav-standards" />
           <NavItem to="/risks" icon={ShieldAlert} label="Risks & Tech Debt" testId="nav-risks" />
+          <div className="pt-3 pb-1 px-2 text-eyebrow">Analytics</div>
+          <NavItem to="/reports" icon={FileText} label="Reports & Exports" testId="nav-reports" />
           <div className="pt-3 pb-1 px-2 text-eyebrow">Admin</div>
+          <NavItem to="/admin/audit" icon={History} label="Audit Trail" testId="nav-audit" />
           <NavItem to="/admin/brand" icon={Settings} label="Brand Settings" testId="nav-brand-settings" />
         </nav>
         <div className="p-3 border-t border-slate-800">

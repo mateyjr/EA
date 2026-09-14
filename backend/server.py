@@ -10,9 +10,13 @@ import bcrypt
 import jwt
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional, Dict, Any, Literal
-from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, Response
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, Response, UploadFile, File, Form
 from fastapi.security import HTTPBearer
+from fastapi.responses import StreamingResponse
 from starlette.middleware.cors import CORSMiddleware
+import io
+import csv
+import base64
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, Field, EmailStr, ConfigDict
 
@@ -573,8 +577,273 @@ async def audit(user: dict, action: str, obj_id: str, domain: str, before: Any, 
     })
 
 @api.get("/audit")
-async def list_audit(user: dict = Depends(get_current_user)):
-    return await db.audit.find({}, {"_id": 0}).sort("timestamp", -1).limit(200).to_list(200)
+async def list_audit(
+    domain: Optional[str] = None,
+    user_email: Optional[str] = None,
+    action: Optional[str] = None,
+    q: Optional[str] = None,
+    limit: int = 500,
+    user: dict = Depends(get_current_user),
+):
+    query: Dict[str, Any] = {}
+    if domain: query["domain"] = domain
+    if user_email: query["user_email"] = user_email
+    if action: query["action"] = action
+    if q:
+        query["$or"] = [
+            {"user_email": {"$regex": q, "$options": "i"}},
+            {"object_id": {"$regex": q, "$options": "i"}},
+            {"action": {"$regex": q, "$options": "i"}},
+        ]
+    return await db.audit.find(query, {"_id": 0}).sort("timestamp", -1).limit(min(limit, 2000)).to_list(min(limit, 2000))
+
+@api.get("/audit/users")
+async def audit_users(user: dict = Depends(get_current_user)):
+    users = await db.audit.distinct("user_email")
+    return [u for u in users if u]
+
+# ---------- Documents ----------
+@api.get("/objects/{oid}/documents")
+async def list_documents(oid: str, user: dict = Depends(get_current_user)):
+    return await db.documents.find({"object_id": oid}, {"_id": 0, "content_b64": 0}).sort("uploaded_at", -1).to_list(200)
+
+@api.post("/objects/{oid}/documents")
+async def upload_document(oid: str, file: UploadFile = File(...), user: dict = Depends(get_current_user)):
+    obj = await db.objects.find_one({"id": oid}, {"_id": 0})
+    if not obj:
+        raise HTTPException(status_code=404, detail="Object not found")
+    data = await file.read()
+    if len(data) > 15 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="File too large (max 15MB)")
+    doc = {
+        "id": str(uuid.uuid4()),
+        "object_id": oid,
+        "filename": file.filename,
+        "content_type": file.content_type or "application/octet-stream",
+        "size": len(data),
+        "content_b64": base64.b64encode(data).decode(),
+        "uploaded_by": user.get("email"),
+        "uploaded_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.documents.insert_one(doc)
+    await audit(user, "upload_document", oid, obj.get("domain", ""), None, {"filename": doc["filename"], "size": doc["size"]})
+    return {k: v for k, v in doc.items() if k != "content_b64"}
+
+@api.get("/documents/{did}/download")
+async def download_document(did: str, token: Optional[str] = None, user: Optional[dict] = None):
+    # Allow token via query for direct-link downloads
+    if user is None:
+        if not token:
+            raise HTTPException(status_code=401, detail="Not authenticated")
+        try:
+            payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGO])
+            u = await db.users.find_one({"id": payload["sub"]}, {"_id": 0})
+            if not u: raise HTTPException(status_code=401, detail="Invalid")
+        except Exception:
+            raise HTTPException(status_code=401, detail="Invalid token")
+    doc = await db.documents.find_one({"id": did}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Not found")
+    binary = base64.b64decode(doc["content_b64"])
+    return StreamingResponse(
+        io.BytesIO(binary),
+        media_type=doc["content_type"],
+        headers={"Content-Disposition": f'attachment; filename="{doc["filename"]}"'},
+    )
+
+@api.delete("/documents/{did}")
+async def delete_document(did: str, user: dict = Depends(get_current_user)):
+    doc = await db.documents.find_one({"id": did}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Not found")
+    await db.documents.delete_one({"id": did})
+    await audit(user, "delete_document", doc["object_id"], "", {"filename": doc["filename"]}, None)
+    return {"ok": True}
+
+# ---------- Process Flow (steps + per-step domain touches) ----------
+@api.get("/processes/{pid}/flow")
+async def process_flow(pid: str, user: dict = Depends(get_current_user)):
+    process = await db.objects.find_one({"id": pid}, {"_id": 0})
+    if not process:
+        raise HTTPException(status_code=404, detail="Not found")
+    step_rels = await db.relationships.find({"source_id": pid, "rel_type": "has_step"}, {"_id": 0}).to_list(200)
+    step_ids = [r["target_id"] for r in step_rels]
+    steps = await db.objects.find({"id": {"$in": step_ids}}, {"_id": 0}).to_list(200)
+    # sort by code (PS-01, PS-02…)
+    steps.sort(key=lambda s: (s.get("code") or "", s.get("name") or ""))
+    # for each step, walk downstream 3 levels to gather touches per domain
+    all_rels = await db.relationships.find({}, {"_id": 0}).to_list(20000)
+    all_objs = await db.objects.find({}, {"_id": 0}).to_list(10000)
+    by_id = {o["id"]: o for o in all_objs}
+    out = []
+    for s in steps:
+        visited = {s["id"]}
+        frontier = [(s["id"], 0)]
+        while frontier:
+            cur, d = frontier.pop(0)
+            if d >= 3: continue
+            for r in all_rels:
+                if r["source_id"] == cur and r["target_id"] not in visited:
+                    visited.add(r["target_id"])
+                    frontier.append((r["target_id"], d + 1))
+        touches: Dict[str, List[Dict[str, Any]]] = {}
+        for nid in visited:
+            if nid == s["id"]: continue
+            n = by_id.get(nid)
+            if not n: continue
+            touches.setdefault(n["domain"], []).append(n)
+        out.append({"step": s, "touches": touches})
+    return {"process": process, "steps": out}
+
+# ---------- Reports ----------
+def _report_rows(kind: str, objs: List[dict], adrs: List[dict], stds: List[dict], risks: List[dict]):
+    if kind == "application-portfolio":
+        rows = [["Code", "Name", "Owner", "Criticality", "Lifecycle", "Status", "Technology Stack"]]
+        for o in [x for x in objs if x["domain"] == "application"]:
+            rows.append([o.get("code", ""), o.get("name", ""), o.get("owner", ""), o.get("criticality", ""), o.get("lifecycle", ""), o.get("status", ""), (o.get("attributes") or {}).get("tech", "")])
+        return rows
+    if kind == "technology-eol":
+        rows = [["Code", "Name", "Vendor", "EOL Date", "Status", "Criticality"]]
+        for o in [x for x in objs if x["domain"] == "technology"]:
+            a = o.get("attributes") or {}
+            rows.append([o.get("code", ""), o.get("name", ""), a.get("vendor", ""), a.get("eol", ""), o.get("status", ""), o.get("criticality", "")])
+        return rows
+    if kind == "business-capabilities":
+        rows = [["Code", "Name", "Owner", "Criticality", "Maturity"]]
+        for o in [x for x in objs if x["domain"] == "business" and x["type"] == "capability"]:
+            a = o.get("attributes") or {}
+            rows.append([o.get("code", ""), o.get("name", ""), o.get("owner", ""), o.get("criticality", ""), a.get("maturity", "")])
+        return rows
+    if kind == "integration-catalogue":
+        rows = [["Code", "Name", "Owner", "Protocol", "Criticality", "Status"]]
+        for o in [x for x in objs if x["domain"] == "integration"]:
+            a = o.get("attributes") or {}
+            rows.append([o.get("code", ""), o.get("name", ""), o.get("owner", ""), a.get("protocol", ""), o.get("criticality", ""), o.get("status", "")])
+        return rows
+    if kind == "data-catalogue":
+        rows = [["Code", "Name", "Owner", "Classification", "Criticality"]]
+        for o in [x for x in objs if x["domain"] == "data"]:
+            a = o.get("attributes") or {}
+            rows.append([o.get("code", ""), o.get("name", ""), o.get("owner", ""), a.get("classification", ""), o.get("criticality", "")])
+        return rows
+    if kind == "security-controls":
+        rows = [["Code", "Name", "Owner", "Criticality", "Status"]]
+        for o in [x for x in objs if x["domain"] == "security"]:
+            rows.append([o.get("code", ""), o.get("name", ""), o.get("owner", ""), o.get("criticality", ""), o.get("status", "")])
+        return rows
+    if kind == "risks":
+        rows = [["Code", "Title", "Domain", "Severity", "Owner", "Status"]]
+        for r in risks:
+            rows.append([r.get("code", ""), r.get("title", ""), r.get("domain", ""), r.get("severity", ""), r.get("owner", ""), r.get("status", "")])
+        return rows
+    if kind == "adrs":
+        rows = [["Number", "Title", "Domain", "Status", "Owner", "Decision"]]
+        for a in adrs:
+            rows.append([f"ADR-{a.get('number'):03d}" if a.get("number") else "", a.get("title", ""), a.get("domain", ""), a.get("status", ""), a.get("owner", ""), a.get("decision", "")])
+        return rows
+    if kind == "standards":
+        rows = [["Code", "Name", "Domain", "Mandatory", "Version", "Status"]]
+        for s in stds:
+            rows.append([s.get("code", ""), s.get("name", ""), s.get("domain", ""), "Yes" if s.get("mandatory") else "No", s.get("version", ""), s.get("status", "")])
+        return rows
+    if kind == "all-objects":
+        rows = [["Code", "Name", "Domain", "Type", "Owner", "Criticality", "Status"]]
+        for o in objs:
+            rows.append([o.get("code", ""), o.get("name", ""), o.get("domain", ""), o.get("type", ""), o.get("owner", ""), o.get("criticality", ""), o.get("status", "")])
+        return rows
+    return [["No data"]]
+
+REPORT_TITLES = {
+    "application-portfolio": "Application Portfolio",
+    "technology-eol": "Technology EOL / Lifecycle",
+    "business-capabilities": "Business Capabilities",
+    "integration-catalogue": "Integration Catalogue",
+    "data-catalogue": "Data Catalogue",
+    "security-controls": "Security Controls",
+    "risks": "Architecture Risks",
+    "adrs": "Architecture Decision Records",
+    "standards": "Architecture Standards",
+    "all-objects": "All Architecture Objects",
+}
+
+@api.get("/reports")
+async def list_reports(user: dict = Depends(get_current_user)):
+    return [{"key": k, "title": v} for k, v in REPORT_TITLES.items()]
+
+@api.get("/reports/{kind}")
+async def download_report(kind: str, format: str = "csv", user: dict = Depends(get_current_user)):
+    if kind not in REPORT_TITLES:
+        raise HTTPException(status_code=404, detail="Unknown report")
+    objs = await db.objects.find({}, {"_id": 0}).to_list(10000)
+    adrs = await db.adrs.find({}, {"_id": 0}).to_list(1000)
+    stds = await db.standards.find({}, {"_id": 0}).to_list(1000)
+    risks = await db.risks.find({}, {"_id": 0}).to_list(1000)
+    rows = _report_rows(kind, objs, adrs, stds, risks)
+    title = REPORT_TITLES[kind]
+    fname_base = kind.replace("-", "_")
+
+    if format == "csv":
+        buf = io.StringIO()
+        w = csv.writer(buf)
+        w.writerows(rows)
+        return StreamingResponse(
+            io.BytesIO(buf.getvalue().encode()),
+            media_type="text/csv",
+            headers={"Content-Disposition": f'attachment; filename="{fname_base}.csv"'},
+        )
+    if format == "xlsx":
+        from openpyxl import Workbook
+        wb = Workbook()
+        ws = wb.active
+        ws.title = title[:30]
+        for row in rows:
+            ws.append(row)
+        # bold header
+        from openpyxl.styles import Font, PatternFill
+        for cell in ws[1]:
+            cell.font = Font(bold=True, color="FFFFFF")
+            cell.fill = PatternFill("solid", fgColor="1F2937")
+        for col in ws.columns:
+            length = max(len(str(c.value or "")) for c in col)
+            ws.column_dimensions[col[0].column_letter].width = min(length + 2, 60)
+        out = io.BytesIO(); wb.save(out); out.seek(0)
+        return StreamingResponse(
+            out,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f'attachment; filename="{fname_base}.xlsx"'},
+        )
+    if format == "pdf":
+        from reportlab.lib.pagesizes import A4, landscape
+        from reportlab.lib import colors
+        from reportlab.lib.styles import getSampleStyleSheet
+        from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+        buf = io.BytesIO()
+        doc = SimpleDocTemplate(buf, pagesize=landscape(A4), leftMargin=24, rightMargin=24, topMargin=32, bottomMargin=24)
+        styles = getSampleStyleSheet()
+        elements = [
+            Paragraph(f"<b>{title}</b>", styles["Title"]),
+            Paragraph(f"Colecle System EAMS · Generated {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}", styles["Normal"]),
+            Spacer(1, 12),
+        ]
+        t = Table(rows, repeatRows=1)
+        t.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1F2937")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTSIZE", (0, 0), (-1, -1), 8),
+            ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#94a3b8")),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f8fafc")]),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ]))
+        elements.append(t)
+        doc.build(elements)
+        buf.seek(0)
+        return StreamingResponse(
+            buf,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f'attachment; filename="{fname_base}.pdf"'},
+        )
+    raise HTTPException(status_code=400, detail="Unknown format")
 
 # ---------- Health ----------
 @api.get("/")

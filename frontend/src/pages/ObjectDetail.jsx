@@ -12,6 +12,8 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { GitBranch, Link2, ArrowUpRight, ArrowDownRight, Plus, Trash2, Activity } from "lucide-react";
 import { toast } from "sonner";
+import DocumentsPanel from "@/components/DocumentsPanel";
+import ProcessFlow from "@/components/ProcessFlow";
 
 function RelationCard({ obj, rel, direction, onOpen }) {
   const d = domainOf(obj.domain);
@@ -109,6 +111,8 @@ export default function ObjectDetail() {
           <TabsTrigger value="overview" data-testid="tab-overview">Overview</TabsTrigger>
           <TabsTrigger value="relations" data-testid="tab-relations">Relationships</TabsTrigger>
           <TabsTrigger value="impact" data-testid="tab-impact">Impact Analysis</TabsTrigger>
+          {obj.type === "process" && <TabsTrigger value="flow" data-testid="tab-flow">Process Flow</TabsTrigger>}
+          <TabsTrigger value="documents" data-testid="tab-documents">Documents</TabsTrigger>
           <TabsTrigger value="attributes" data-testid="tab-attributes">Attributes</TabsTrigger>
         </TabsList>
 
@@ -244,6 +248,16 @@ export default function ObjectDetail() {
               ))}
             </div>
           </div>
+        </TabsContent>
+
+        {obj.type === "process" && (
+          <TabsContent value="flow">
+            <ProcessFlow processId={obj.id} />
+          </TabsContent>
+        )}
+
+        <TabsContent value="documents">
+          <DocumentsPanel objectId={obj.id} accent={d.color} />
         </TabsContent>
       </Tabs>
     </div>
