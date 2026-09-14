@@ -606,14 +606,24 @@ async def audit_users(user: dict = Depends(get_current_user)):
     users = await db.audit.distinct("user_email")
     return [u for u in users if u]
 
-# ---------- Object Storage (Emergent) ----------
+# ---------- Object Storage (Emergent or Local FS fallback) ----------
 STORAGE_BASE = (os.environ.get("INTEGRATION_PROXY_URL") or "").strip() or "https://integrations.emergentagent.com"
 STORAGE_URL = STORAGE_BASE.rstrip("/") + "/objstore/api/v1/storage"
 EMERGENT_KEY = os.environ.get("EMERGENT_LLM_KEY")
 APP_STORAGE_PREFIX = os.environ.get("APP_STORAGE_PREFIX", "colecle-eams")
+STORAGE_MODE = os.environ.get("STORAGE_MODE", "auto").lower()  # auto | emergent | local
+LOCAL_STORAGE_DIR = os.environ.get("LOCAL_STORAGE_DIR", "/data/uploads")
 _storage_key = {"value": None}
 
+def _use_local_storage() -> bool:
+    if STORAGE_MODE == "local": return True
+    if STORAGE_MODE == "emergent": return False
+    return not EMERGENT_KEY  # auto: fall back to local when no Emergent key
+
 def init_storage(force: bool = False):
+    if _use_local_storage():
+        os.makedirs(LOCAL_STORAGE_DIR, exist_ok=True)
+        return "local"
     if _storage_key["value"] and not force:
         return _storage_key["value"]
     if not EMERGENT_KEY:
@@ -624,6 +634,9 @@ def init_storage(force: bool = False):
     return _storage_key["value"]
 
 def _storage_put(path: str, data: bytes, content_type: str) -> dict:
+    if _use_local_storage():
+        from onprem_storage import write_blob
+        return write_blob(LOCAL_STORAGE_DIR, path, data)
     key = init_storage()
     if not key: raise HTTPException(status_code=503, detail="Object storage not configured")
     r = requests.put(f"{STORAGE_URL}/objects/{path}", headers={"X-Storage-Key": key, "Content-Type": content_type}, data=data, timeout=120)
@@ -634,6 +647,12 @@ def _storage_put(path: str, data: bytes, content_type: str) -> dict:
     return r.json()
 
 def _storage_get(path: str):
+    if _use_local_storage():
+        from onprem_storage import read_blob
+        blob = read_blob(LOCAL_STORAGE_DIR, path)
+        if blob is None:
+            raise HTTPException(status_code=404, detail="File not found on disk")
+        return blob, "application/octet-stream"
     key = init_storage()
     if not key: raise HTTPException(status_code=503, detail="Object storage not configured")
     r = requests.get(f"{STORAGE_URL}/objects/{path}", headers={"X-Storage-Key": key}, timeout=60)
@@ -1064,9 +1083,26 @@ async def startup():
     await seed_admin_and_data()
     try:
         init_storage()
-        logger.info("Object storage initialized")
+        mode = "local FS" if _use_local_storage() else "Emergent"
+        logger.info(f"Object storage initialized ({mode})")
     except Exception as e:
         logger.warning(f"Object storage init failed (documents feature will be unavailable): {e}")
+    # Optional in-process scheduler for on-prem deployments without external cron.
+    if os.environ.get("RUN_CRONS", "false").lower() in ("1", "true", "yes"):
+        try:
+            from apscheduler.schedulers.asyncio import AsyncIOScheduler
+            from apscheduler.triggers.cron import CronTrigger
+            sched = AsyncIOScheduler(timezone="UTC")
+            sched.add_job(
+                lambda: _run_weekly_reports_job(str(uuid.uuid4())),
+                CronTrigger(day_of_week="mon", hour=8, minute=0),
+                id="weekly-reports",
+                replace_existing=True,
+            )
+            sched.start()
+            logger.info("APScheduler started: weekly-reports Mon 08:00 UTC")
+        except Exception as e:
+            logger.warning(f"APScheduler start failed: {e}")
 
 # ---------- DR Coverage ----------
 @api.get("/dr/coverage")

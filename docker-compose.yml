@@ -1,0 +1,79 @@
+services:
+  mongo:
+    image: mongo:7
+    container_name: colecle_mongo
+    restart: unless-stopped
+    volumes:
+      - mongo_data:/data/db
+    networks: [colecle_net]
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: colecle_backend
+    restart: unless-stopped
+    depends_on:
+      mongo:
+        condition: service_healthy
+    environment:
+      MONGO_URL: mongodb://mongo:27017
+      DB_NAME: ${DB_NAME:-colecle_eams}
+      CORS_ORIGINS: "https://${DOMAIN:-boteams-test.bot.go.tz}"
+      JWT_SECRET: ${JWT_SECRET}
+      ADMIN_EMAIL: ${ADMIN_EMAIL}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+      EMAIL_FROM_NAME: ${EMAIL_FROM_NAME:-Colecle EAMS}
+      WEBHOOK_CRON_SECRET: ${WEBHOOK_CRON_SECRET}
+      APP_STORAGE_PREFIX: colecle-eams
+      STORAGE_MODE: local
+      LOCAL_STORAGE_DIR: /data/uploads
+      RUN_CRONS: "true"
+      # Optional: real email delivery (leave unset for dry-run logging)
+      EMERGENT_EMAIL_KEY: ${EMERGENT_EMAIL_KEY:-}
+    volumes:
+      - uploads_data:/data/uploads
+    networks: [colecle_net]
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+      args:
+        REACT_APP_BACKEND_URL: https://${DOMAIN:-boteams-test.bot.go.tz}
+    container_name: colecle_frontend
+    restart: unless-stopped
+    depends_on: [backend]
+    networks: [colecle_net]
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: colecle_caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on: [backend, frontend]
+    environment:
+      DOMAIN: ${DOMAIN:-boteams-test.bot.go.tz}
+      ACME_EMAIL: ${ACME_EMAIL:-admin@bot.go.tz}
+    networks: [colecle_net]
+
+networks:
+  colecle_net:
+    driver: bridge
+
+volumes:
+  mongo_data:
+  uploads_data:
+  caddy_data:
+  caddy_config:
