@@ -1,8 +1,8 @@
-# GitHub Actions Secrets & Variables
+# GitHub Actions — Build & Push Only
 
-The workflow at `.github/workflows/deploy.yml` builds the two Docker images,
-pushes them to **GitHub Container Registry (GHCR)**, and SSHes into your
-on-prem host at `boteams-test.bot.go.tz` to run `docker compose up -d`.
+The workflow at `.github/workflows/deploy.yml` **only builds and pushes** the
+two Docker images to **GitHub Container Registry (GHCR)**. You pull them onto
+your Docker host and run `docker compose up -d` yourself.
 
 Set the following in **Settings → Secrets and variables → Actions**.
 
@@ -14,76 +14,128 @@ Under the **Variables** tab.
 
 | Name | Example | Purpose |
 |---|---|---|
-| `DOMAIN` | `boteams-test.bot.go.tz` | Baked into React build as `REACT_APP_BACKEND_URL` and used by Caddy for auto-TLS |
-| `ACME_EMAIL` | `admin@bot.go.tz` | Let's Encrypt expiry notifications |
-| `DEPLOY_DIR` | `/opt/colecle-eams` | Host directory where `docker-compose.yml`, `Caddyfile`, `.env` land (default `/opt/colecle-eams`) |
-| `DB_NAME` | `colecle_eams` | Mongo database name (default `colecle_eams`) |
-| `EMAIL_FROM_NAME` | `Colecle EAMS` | Display name on outbound weekly digests |
+| `DOMAIN` | `boteams-test.bot.go.tz` | Baked into the React build as `REACT_APP_BACKEND_URL` at build-time |
 
-## Repository Secrets  (sensitive)
+That's it — one variable. Everything else lives in the `.env` file **on your Docker host**, not in GitHub.
 
-Under the **Secrets** tab.
+## Repository Secrets
 
-### SSH access to the Docker host
+None required by the workflow itself. `GITHUB_TOKEN` (automatic) authenticates the push to GHCR.
 
-| Name | Example / How to obtain |
-|---|---|
-| `SSH_HOST` | Public IP or FQDN of your Docker host (e.g. `boteams-test.bot.go.tz`) |
-| `SSH_USER` | Username on the host with Docker access (e.g. `deploy`) |
-| `SSH_PRIVATE_KEY` | Full contents of a **private** SSH key whose **public key** is in `~/.ssh/authorized_keys` on the host. Generate with `ssh-keygen -t ed25519 -f colecle_deploy -C github-actions` and paste the file starting `-----BEGIN OPENSSH PRIVATE KEY-----` |
-| `SSH_PORT` | *(optional)* Non-default SSH port. Omit for 22 |
-
-### GHCR pull credentials (used on the host to `docker pull` private images)
-
-| Name | How to obtain |
-|---|---|
-| `GHCR_READ_USER` | Your GitHub username (or a machine user) |
-| `GHCR_READ_TOKEN` | A GitHub **Personal Access Token (classic)** with `read:packages`. Generate at [github.com/settings/tokens](https://github.com/settings/tokens). If you make the packages public, you can leave this blank and remove the `docker login` line from the workflow |
-
-### Application runtime secrets (written into `.env` on the host)
-
-| Name | Example / How to generate |
-|---|---|
-| `JWT_SECRET` | 64-char hex: `openssl rand -hex 32` |
-| `WEBHOOK_CRON_SECRET` | 32-char hex: `openssl rand -hex 16` |
-| `ADMIN_EMAIL` | `matey.willy@gmail.com` (seeded admin — idempotent) |
-| `ADMIN_PASSWORD` | Strong password for the seeded admin. Rotate here and the next deploy re-hashes it |
-| `EMERGENT_EMAIL_KEY` | Leave empty to keep weekly emails in **dry-run**; set to your Emergent email key (or wire SMTP in code) to enable real delivery |
+If you make the images **private** (default for GHCR) you'll need a Personal Access Token on the host to pull them — see the deploy steps below.
 
 ---
 
-## Environment protection (recommended)
+## What the workflow produces
 
-Create a **Production** environment under Settings → Environments and:
-- Require manual approval before the `deploy` job runs
-- Restrict which branches (e.g. `main`) can deploy through it
-- Move the SSH secrets into the Environment scope so they're only exposed on approved runs
+On every push to `main` (or manual **Run workflow**), it publishes:
 
-The workflow already references `environment: production` on the deploy job — you only need to click **New environment** → name it `production`.
+| Image | Tag |
+|---|---|
+| `ghcr.io/<owner>/<repo>-backend` | `latest` and `<git-sha[:7]>` |
+| `ghcr.io/<owner>/<repo>-frontend` | `latest` and `<git-sha[:7]>` |
+
+Names are lowercased automatically (GHCR requirement).
 
 ---
 
-## First deployment prerequisites (one-time, on the host)
+## Deploy on your host (manual)
+
+### 1. First-time setup
 
 ```bash
-# As root or a user in the docker group:
-sudo mkdir -p /opt/colecle-eams
-sudo chown $USER /opt/colecle-eams
-
-# Install docker engine + compose if not already
+# Install docker + compose plugin (any Linux):
 curl -fsSL https://get.docker.com | sh
 sudo usermod -aG docker $USER   # log out & back in
 
-# Add the CI public key to authorized_keys for `deploy` user
-mkdir -p ~/.ssh && chmod 700 ~/.ssh
-echo "ssh-ed25519 AAAA... github-actions" >> ~/.ssh/authorized_keys
-chmod 600 ~/.ssh/authorized_keys
+# Prep the deploy directory
+sudo mkdir -p /opt/colecle-eams
+sudo chown $USER /opt/colecle-eams
+cd /opt/colecle-eams
 ```
 
-DNS `boteams-test.bot.go.tz A <host-public-ip>` must resolve, and ports **80** and **443** must be reachable from the internet for Let's Encrypt to issue a certificate.
+### 2. Copy config files from the repo (or scp them from your laptop)
+
+You need exactly three files next to your `.env`:
+
+- `docker-compose.yml`
+- `Caddyfile`
+- `.env` (create it from `.env.deploy.example` — see next step)
+
+Either check out the repo on the host:
+```bash
+git clone https://github.com/<owner>/<repo>.git .
+```
+…or `scp` just those files from your dev box.
+
+### 3. Configure `.env`
+
+```bash
+cp .env.deploy.example .env
+sed -i "s|REPLACE_WITH_openssl_rand_hex_32|$(openssl rand -hex 32)|" .env
+sed -i "s|REPLACE_WITH_openssl_rand_hex_16|$(openssl rand -hex 16)|" .env
+$EDITOR .env   # set DOMAIN, ACME_EMAIL, ADMIN_EMAIL, ADMIN_PASSWORD
+```
+
+### 4. Point the compose file at the pushed images
+
+Add these lines at the bottom of your `.env`:
+
+```env
+BACKEND_IMAGE=ghcr.io/<owner>/<repo>-backend:latest
+FRONTEND_IMAGE=ghcr.io/<owner>/<repo>-frontend:latest
+```
+
+Replace `<owner>` and `<repo>` with your GitHub org + repo, lowercased.
+
+### 5. Log in to GHCR (only for private images)
+
+```bash
+# Generate a classic PAT at https://github.com/settings/tokens with `read:packages`
+echo "<YOUR_PAT>" | docker login ghcr.io -u <github-username> --password-stdin
+```
+
+### 6. Pull & run
+
+```bash
+docker compose pull
+docker compose up -d
+docker compose logs -f caddy   # wait for "certificate obtained"
+```
+
+Visit **https://boteams-test.bot.go.tz** and sign in with `ADMIN_EMAIL`/`ADMIN_PASSWORD`.
+
+### 7. Upgrade
+
+Every push to `main` republishes `:latest`. On the host:
+
+```bash
+docker compose pull
+docker compose up -d
+docker image prune -f
+```
 
 ---
 
-## Trigger
+## `.env` fields reference
 
-Push to `main`, or hit **Run workflow** manually from the Actions tab (workflow_dispatch is enabled).
+| Variable | Required | Example |
+|---|:-:|---|
+| `DOMAIN` | ✅ | `boteams-test.bot.go.tz` |
+| `ACME_EMAIL` | ✅ | `admin@bot.go.tz` |
+| `JWT_SECRET` | ✅ | 64-char hex |
+| `WEBHOOK_CRON_SECRET` | ✅ | 32-char hex |
+| `ADMIN_EMAIL` | ✅ | `matey.willy@gmail.com` |
+| `ADMIN_PASSWORD` | ✅ | strong password |
+| `DB_NAME` |  | `colecle_eams` (default) |
+| `EMAIL_FROM_NAME` |  | `Colecle EAMS` |
+| `EMERGENT_EMAIL_KEY` |  | leave blank for DRY-RUN email |
+| `BACKEND_IMAGE` | ✅ | `ghcr.io/<owner>/<repo>-backend:latest` |
+| `FRONTEND_IMAGE` | ✅ | `ghcr.io/<owner>/<repo>-frontend:latest` |
+
+---
+
+## Trigger the workflow
+
+- **Automatic**: push to `main`
+- **Manual**: Actions tab → *Build & Push Colecle EAMS* → **Run workflow**

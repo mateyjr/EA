@@ -1,4 +1,4 @@
-name: Deploy Colecle EAMS
+name: Build & Push Colecle EAMS
 
 on:
   push:
@@ -15,8 +15,6 @@ jobs:
     permissions:
       contents: read
       packages: write
-    outputs:
-      image_tag: ${{ steps.meta.outputs.image_tag }}
     steps:
       - uses: actions/checkout@v4
 
@@ -62,56 +60,20 @@ jobs:
           cache-from: type=gha,scope=frontend
           cache-to: type=gha,scope=frontend,mode=max
 
-  deploy:
-    needs: build-and-push
-    runs-on: ubuntu-latest
-    environment: production
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Copy compose + Caddyfile to host
-        uses: appleboy/scp-action@v0.1.7
-        with:
-          host: ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          port: ${{ secrets.SSH_PORT || 22 }}
-          source: "docker-compose.yml,Caddyfile"
-          target: ${{ vars.DEPLOY_DIR || '/opt/colecle-eams' }}
-
-      - name: Deploy over SSH
-        uses: appleboy/ssh-action@v1.2.0
-        with:
-          host: ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          port: ${{ secrets.SSH_PORT || 22 }}
-          envs: IMAGE_TAG
-          script: |
-            set -euo pipefail
-            cd ${{ vars.DEPLOY_DIR || '/opt/colecle-eams' }}
-            IMG_NS=$(echo '${{ env.IMAGE_NAMESPACE }}' | tr '[:upper:]' '[:lower:]')
-            IMG_TAG='${{ needs.build-and-push.outputs.image_tag }}'
-
-            # Login to GHCR to pull private images
-            echo '${{ secrets.GHCR_READ_TOKEN }}' | docker login ghcr.io -u '${{ secrets.GHCR_READ_USER }}' --password-stdin
-
-            # Write / refresh .env from GitHub secrets & vars
-            cat > .env <<EOF
-            DOMAIN=${{ vars.DOMAIN }}
-            ACME_EMAIL=${{ vars.ACME_EMAIL }}
-            DB_NAME=${{ vars.DB_NAME || 'colecle_eams' }}
-            JWT_SECRET=${{ secrets.JWT_SECRET }}
-            WEBHOOK_CRON_SECRET=${{ secrets.WEBHOOK_CRON_SECRET }}
-            ADMIN_EMAIL=${{ secrets.ADMIN_EMAIL }}
-            ADMIN_PASSWORD=${{ secrets.ADMIN_PASSWORD }}
-            EMAIL_FROM_NAME=${{ vars.EMAIL_FROM_NAME || 'Colecle EAMS' }}
-            EMERGENT_EMAIL_KEY=${{ secrets.EMERGENT_EMAIL_KEY }}
-            BACKEND_IMAGE=ghcr.io/${IMG_NS}-backend:${IMG_TAG}
-            FRONTEND_IMAGE=ghcr.io/${IMG_NS}-frontend:${IMG_TAG}
-            EOF
-            chmod 600 .env
-
-            docker compose pull
-            docker compose up -d --remove-orphans
-            docker image prune -f
+      - name: Summary
+        run: |
+          IMG_NS=$(echo '${{ env.IMAGE_NAMESPACE }}' | tr '[:upper:]' '[:lower:]')
+          echo "### Images published " >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- \`ghcr.io/${IMG_NS}-backend:${{ steps.meta.outputs.image_tag }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- \`ghcr.io/${IMG_NS}-backend:latest\`" >> $GITHUB_STEP_SUMMARY
+          echo "- \`ghcr.io/${IMG_NS}-frontend:${{ steps.meta.outputs.image_tag }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- \`ghcr.io/${IMG_NS}-frontend:latest\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Pull on your Docker host with:" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`bash" >> $GITHUB_STEP_SUMMARY
+          echo "docker login ghcr.io -u <username>" >> $GITHUB_STEP_SUMMARY
+          echo "docker pull ghcr.io/${IMG_NS}-backend:latest" >> $GITHUB_STEP_SUMMARY
+          echo "docker pull ghcr.io/${IMG_NS}-frontend:latest" >> $GITHUB_STEP_SUMMARY
+          echo "docker compose up -d" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
