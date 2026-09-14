@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import { api, API } from "@/lib/api";
 import { FileText, Download, FileSpreadsheet, FileType } from "lucide-react";
 import { toast } from "sonner";
+import Subscriptions from "@/components/Subscriptions";
 
 const ICONS = {
   csv: FileText,
@@ -86,6 +87,8 @@ export default function Reports() {
           );
         })}
       </div>
+
+      <Subscriptions />
     </div>
   );
 }

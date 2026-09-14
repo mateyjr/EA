@@ -7,7 +7,7 @@ import { api } from "@/lib/api";
 import {
   LayoutDashboard, GitBranch, ClipboardCheck, ScrollText, ShieldAlert,
   BookMarked, Settings, LogOut, Search, ChevronRight, Sparkles, Map,
-  FileText, History
+  FileText, History, ShieldOff, Grid3x3
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 
@@ -145,6 +145,8 @@ export default function AppShell({ children }) {
           <NavItem to="/standards" icon={ScrollText} label="Standards" testId="nav-standards" />
           <NavItem to="/risks" icon={ShieldAlert} label="Risks & Tech Debt" testId="nav-risks" />
           <div className="pt-3 pb-1 px-2 text-eyebrow">Analytics</div>
+          <NavItem to="/capabilities/heatmap" icon={Grid3x3} label="Capability Heatmap" testId="nav-heatmap" />
+          <NavItem to="/dr-coverage" icon={ShieldOff} label="DR Coverage" testId="nav-dr" />
           <NavItem to="/reports" icon={FileText} label="Reports & Exports" testId="nav-reports" />
           <div className="pt-3 pb-1 px-2 text-eyebrow">Admin</div>
           <NavItem to="/admin/audit" icon={History} label="Audit Trail" testId="nav-audit" />

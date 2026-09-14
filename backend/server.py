@@ -17,6 +17,10 @@ from starlette.middleware.cors import CORSMiddleware
 import io
 import csv
 import base64
+import httpx
+import requests
+import hmac
+import secrets
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, Field, EmailStr, ConfigDict
 
@@ -602,10 +606,47 @@ async def audit_users(user: dict = Depends(get_current_user)):
     users = await db.audit.distinct("user_email")
     return [u for u in users if u]
 
-# ---------- Documents ----------
+# ---------- Object Storage (Emergent) ----------
+STORAGE_BASE = (os.environ.get("INTEGRATION_PROXY_URL") or "").strip() or "https://integrations.emergentagent.com"
+STORAGE_URL = STORAGE_BASE.rstrip("/") + "/objstore/api/v1/storage"
+EMERGENT_KEY = os.environ.get("EMERGENT_LLM_KEY")
+APP_STORAGE_PREFIX = os.environ.get("APP_STORAGE_PREFIX", "colecle-eams")
+_storage_key = {"value": None}
+
+def init_storage(force: bool = False):
+    if _storage_key["value"] and not force:
+        return _storage_key["value"]
+    if not EMERGENT_KEY:
+        return None
+    r = requests.post(f"{STORAGE_URL}/init", json={"emergent_key": EMERGENT_KEY}, timeout=30)
+    r.raise_for_status()
+    _storage_key["value"] = r.json()["storage_key"]
+    return _storage_key["value"]
+
+def _storage_put(path: str, data: bytes, content_type: str) -> dict:
+    key = init_storage()
+    if not key: raise HTTPException(status_code=503, detail="Object storage not configured")
+    r = requests.put(f"{STORAGE_URL}/objects/{path}", headers={"X-Storage-Key": key, "Content-Type": content_type}, data=data, timeout=120)
+    if r.status_code == 404:
+        key = init_storage(force=True)
+        r = requests.put(f"{STORAGE_URL}/objects/{path}", headers={"X-Storage-Key": key, "Content-Type": content_type}, data=data, timeout=120)
+    r.raise_for_status()
+    return r.json()
+
+def _storage_get(path: str):
+    key = init_storage()
+    if not key: raise HTTPException(status_code=503, detail="Object storage not configured")
+    r = requests.get(f"{STORAGE_URL}/objects/{path}", headers={"X-Storage-Key": key}, timeout=60)
+    if r.status_code == 404:
+        key = init_storage(force=True)
+        r = requests.get(f"{STORAGE_URL}/objects/{path}", headers={"X-Storage-Key": key}, timeout=60)
+    r.raise_for_status()
+    return r.content, r.headers.get("Content-Type", "application/octet-stream")
+
+# ---------- Documents (S3-style via Emergent Object Storage) ----------
 @api.get("/objects/{oid}/documents")
 async def list_documents(oid: str, user: dict = Depends(get_current_user)):
-    return await db.documents.find({"object_id": oid}, {"_id": 0, "content_b64": 0}).sort("uploaded_at", -1).to_list(200)
+    return await db.documents.find({"object_id": oid, "is_deleted": {"$ne": True}}, {"_id": 0}).sort("uploaded_at", -1).to_list(200)
 
 @api.post("/objects/{oid}/documents")
 async def upload_document(oid: str, file: UploadFile = File(...), user: dict = Depends(get_current_user)):
@@ -613,41 +654,54 @@ async def upload_document(oid: str, file: UploadFile = File(...), user: dict = D
     if not obj:
         raise HTTPException(status_code=404, detail="Object not found")
     data = await file.read()
-    if len(data) > 15 * 1024 * 1024:
-        raise HTTPException(status_code=413, detail="File too large (max 15MB)")
+    if len(data) > 200 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="File too large (max 200MB)")
+    ext = (file.filename.rsplit(".", 1)[-1] if "." in (file.filename or "") else "bin").lower()
+    doc_id = str(uuid.uuid4())
+    path = f"{APP_STORAGE_PREFIX}/objects/{oid}/{doc_id}.{ext}"
+    ct = file.content_type or "application/octet-stream"
+    try:
+        result = _storage_put(path, data, ct)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Object storage upload failed: {e}")
+        raise HTTPException(status_code=502, detail="Storage upload failed")
     doc = {
-        "id": str(uuid.uuid4()),
-        "object_id": oid,
-        "filename": file.filename,
-        "content_type": file.content_type or "application/octet-stream",
-        "size": len(data),
-        "content_b64": base64.b64encode(data).decode(),
+        "id": doc_id, "object_id": oid,
+        "storage_path": result.get("path", path),
+        "filename": file.filename, "content_type": ct,
+        "size": result.get("size", len(data)),
         "uploaded_by": user.get("email"),
         "uploaded_at": datetime.now(timezone.utc).isoformat(),
+        "is_deleted": False,
     }
     await db.documents.insert_one(doc)
     await audit(user, "upload_document", oid, obj.get("domain", ""), None, {"filename": doc["filename"], "size": doc["size"]})
-    return {k: v for k, v in doc.items() if k != "content_b64"}
+    return {k: v for k, v in doc.items() if k != "_id"}
 
 @api.get("/documents/{did}/download")
-async def download_document(did: str, token: Optional[str] = None, user: Optional[dict] = None):
-    # Allow token via query for direct-link downloads
-    if user is None:
-        if not token:
-            raise HTTPException(status_code=401, detail="Not authenticated")
-        try:
-            payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGO])
-            u = await db.users.find_one({"id": payload["sub"]}, {"_id": 0})
-            if not u: raise HTTPException(status_code=401, detail="Invalid")
-        except Exception:
-            raise HTTPException(status_code=401, detail="Invalid token")
-    doc = await db.documents.find_one({"id": did}, {"_id": 0})
+async def download_document(did: str, token: Optional[str] = None):
+    if not token:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    try:
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGO])
+        u = await db.users.find_one({"id": payload["sub"]}, {"_id": 0})
+        if not u: raise HTTPException(status_code=401, detail="Invalid")
+    except HTTPException: raise
+    except Exception:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    doc = await db.documents.find_one({"id": did, "is_deleted": {"$ne": True}}, {"_id": 0})
     if not doc:
         raise HTTPException(status_code=404, detail="Not found")
-    binary = base64.b64decode(doc["content_b64"])
+    try:
+        binary, ct = _storage_get(doc["storage_path"])
+    except Exception as e:
+        logger.error(f"Storage download failed: {e}")
+        raise HTTPException(status_code=502, detail="Storage download failed")
     return StreamingResponse(
         io.BytesIO(binary),
-        media_type=doc["content_type"],
+        media_type=doc.get("content_type", ct),
         headers={"Content-Disposition": f'attachment; filename="{doc["filename"]}"'},
     )
 
@@ -656,7 +710,8 @@ async def delete_document(did: str, user: dict = Depends(get_current_user)):
     doc = await db.documents.find_one({"id": did}, {"_id": 0})
     if not doc:
         raise HTTPException(status_code=404, detail="Not found")
-    await db.documents.delete_one({"id": did})
+    # Soft-delete (storage has no delete API)
+    await db.documents.update_one({"id": did}, {"$set": {"is_deleted": True}})
     await audit(user, "delete_document", doc["object_id"], "", {"filename": doc["filename"]}, None)
     return {"ok": True}
 
@@ -896,9 +951,9 @@ async def seed_admin_and_data():
         mk("business", "process_step", "PS-04", "Persist Transaction", "Persists to system of record.", owner="Ops"),
         mk("business", "process_step", "PS-05", "Send Response", "Responds to participant.", owner="Ops"),
         # Applications
-        mk("application", "application", "APP-01", "Payment Gateway", "Public-facing gateway.", owner="App Team A", criticality="Mission-Critical", lifecycle="Production", attributes={"vendor": "Internal", "tech": "Java/Spring"}),
-        mk("application", "application", "APP-02", "Core Payment Engine", "Executes payment logic.", owner="App Team A", criticality="Mission-Critical", lifecycle="Production", attributes={"tech": "Java/Spring"}),
-        mk("application", "application", "APP-03", "Participant Master", "Master data for participants.", owner="MDM Team", criticality="High", lifecycle="Production"),
+        mk("application", "application", "APP-01", "Payment Gateway", "Public-facing gateway.", owner="App Team A", criticality="Mission-Critical", lifecycle="Production", attributes={"vendor": "Internal", "tech": "Java/Spring", "rto": "5m", "rpo": "0s", "dr_site": "DC-B", "has_dr": True}),
+        mk("application", "application", "APP-02", "Core Payment Engine", "Executes payment logic.", owner="App Team A", criticality="Mission-Critical", lifecycle="Production", attributes={"tech": "Java/Spring", "rto": "1h", "rpo": "5m", "dr_site": "DC-B", "has_dr": True}),
+        mk("application", "application", "APP-03", "Participant Master", "Master data for participants.", owner="MDM Team", criticality="High", lifecycle="Production", attributes={"rto": "4h", "rpo": "1h"}),
         # Data
         mk("data", "data_entity", "DE-01", "Payment Instruction", "Inbound instruction payload.", owner="Data Steward A", criticality="High", attributes={"classification": "Confidential"}),
         mk("data", "data_entity", "DE-02", "Participant Master Data", "Participant reference data.", owner="Data Steward B", criticality="High", attributes={"classification": "Internal"}),
@@ -1007,6 +1062,206 @@ async def seed_admin_and_data():
 @app.on_event("startup")
 async def startup():
     await seed_admin_and_data()
+    try:
+        init_storage()
+        logger.info("Object storage initialized")
+    except Exception as e:
+        logger.warning(f"Object storage init failed (documents feature will be unavailable): {e}")
+
+# ---------- DR Coverage ----------
+@api.get("/dr/coverage")
+async def dr_coverage(user: dict = Depends(get_current_user)):
+    apps = await db.objects.find({"domain": "application"}, {"_id": 0}).to_list(2000)
+    covered, missing, partial = [], [], []
+    for a in apps:
+        attr = a.get("attributes") or {}
+        has_dr = bool(attr.get("dr_site")) or attr.get("has_dr") is True
+        rto = attr.get("rto")
+        rpo = attr.get("rpo")
+        entry = {**a, "_dr": {"dr_site": attr.get("dr_site"), "rto": rto, "rpo": rpo, "has_dr": has_dr}}
+        if has_dr and rto and rpo:
+            covered.append(entry)
+        elif has_dr or rto or rpo:
+            partial.append(entry)
+        else:
+            missing.append(entry)
+    total = len(apps)
+    return {
+        "total": total,
+        "covered": covered,
+        "partial": partial,
+        "missing": missing,
+        "coverage_pct": round(100 * len(covered) / total, 1) if total else 0,
+        "critical_missing": [x for x in missing if x.get("criticality") in ("Mission-Critical", "High")],
+    }
+
+# ---------- Capability Heatmap ----------
+_MATURITY_LEVELS = ["L1", "L2", "L3", "L4", "L5"]
+_STRATEGIC_LEVELS = ["Low", "Medium", "High"]
+
+@api.get("/capabilities/heatmap")
+async def capability_heatmap(user: dict = Depends(get_current_user)):
+    caps = await db.objects.find({"domain": "business", "type": "capability"}, {"_id": 0}).to_list(2000)
+    grid: Dict[str, Dict[str, List[Dict[str, Any]]]] = {m: {s: [] for s in _STRATEGIC_LEVELS} for m in _MATURITY_LEVELS}
+    for c in caps:
+        a = c.get("attributes") or {}
+        m = (a.get("maturity") or "L1").upper()
+        s = a.get("strategic") or "Medium"
+        if m not in _MATURITY_LEVELS: m = "L1"
+        if s not in _STRATEGIC_LEVELS: s = "Medium"
+        grid[m][s].append(c)
+    return {"grid": grid, "maturity_levels": _MATURITY_LEVELS, "strategic_levels": _STRATEGIC_LEVELS, "total": len(caps)}
+
+# ---------- Report Subscriptions ----------
+class SubscriptionIn(BaseModel):
+    email: EmailStr
+    report_keys: List[str]
+
+@api.get("/subscriptions")
+async def list_subscriptions(user: dict = Depends(get_current_user)):
+    return await db.subscriptions.find({}, {"_id": 0}).sort("email", 1).to_list(500)
+
+@api.post("/subscriptions")
+async def create_subscription(body: SubscriptionIn, user: dict = Depends(get_current_user)):
+    invalid = [k for k in body.report_keys if k not in REPORT_TITLES]
+    if invalid: raise HTTPException(status_code=400, detail=f"Unknown report keys: {invalid}")
+    sub = {
+        "id": str(uuid.uuid4()),
+        "email": body.email.lower(),
+        "report_keys": body.report_keys,
+        "created_by": user.get("email"),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "last_sent_at": None,
+    }
+    await db.subscriptions.update_one({"email": sub["email"]}, {"$set": sub}, upsert=True)
+    return sub
+
+@api.delete("/subscriptions/{sid}")
+async def delete_subscription(sid: str, user: dict = Depends(get_current_user)):
+    await db.subscriptions.delete_one({"id": sid})
+    return {"ok": True}
+
+# ---------- Email helper (Emergent-managed Resend) ----------
+EMAIL_BASE_URL = "https://integrations.emergentagent.com"
+EMAIL_KEY = os.environ.get("EMERGENT_EMAIL_KEY")
+EMAIL_FROM_NAME = os.environ.get("EMAIL_FROM_NAME", "Colecle EAMS")
+
+async def send_report_email(to: str, subject: str, html: str) -> Optional[str]:
+    if not EMAIL_KEY:
+        logger.info(f"[EMAIL DRY-RUN] to={to} subject={subject!r}")
+        return "dry-run"
+    payload = {"to": [to], "subject": subject, "html": html, "from_name": EMAIL_FROM_NAME}
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            r = await client.post(f"{EMAIL_BASE_URL}/api/v1/email/send", headers={"X-Email-Key": EMAIL_KEY}, json=payload)
+        r.raise_for_status()
+        return r.json().get("id")
+    except Exception as e:
+        logger.error(f"Email send failed: {e}")
+        return None
+
+# ---------- Cron endpoint: Weekly reports ----------
+WEBHOOK_CRON_SECRET = os.environ.get("WEBHOOK_CRON_SECRET", "")
+
+async def _run_weekly_reports_job(run_id: str):
+    # Idempotency: check by run_id
+    if run_id and await db.cron_runs.find_one({"run_id": run_id}):
+        return
+    if run_id:
+        await db.cron_runs.insert_one({"run_id": run_id, "job": "weekly-reports", "at": datetime.now(timezone.utc).isoformat()})
+    subs = await db.subscriptions.find({}, {"_id": 0}).to_list(2000)
+    for s in subs:
+        titles = [REPORT_TITLES[k] for k in s.get("report_keys", []) if k in REPORT_TITLES]
+        if not titles: continue
+        subject = f"Your weekly Colecle EAMS reports · {datetime.now(timezone.utc).strftime('%b %d, %Y')}"
+        rows_html = "".join(f"<li style='margin:6px 0'>{escape_html(t)}</li>" for t in titles)
+        html = (
+            "<table role='presentation' width='100%' style='font-family:Arial,sans-serif;color:#111'>"
+            "<tr><td style='padding:24px'>"
+            f"<h2 style='color:#f59e0b;margin:0 0 8px'>Colecle EAMS Weekly Digest</h2>"
+            f"<p>Hello,</p><p>Here are your subscribed architecture reports for this week:</p>"
+            f"<ul>{rows_html}</ul>"
+            f"<p>Sign in to Colecle EAMS to download each report as PDF, Excel or CSV.</p>"
+            f"<p style='font-size:12px;color:#888;margin-top:24px'>Sent by {escape_html(EMAIL_FROM_NAME)}. "
+            "We never ask for your password by email. Manage your subscription in Reports & Exports → Subscriptions.</p>"
+            "</td></tr></table>"
+        )
+        eid = await send_report_email(s["email"], subject, html)
+        await db.subscriptions.update_one({"id": s["id"]}, {"$set": {"last_sent_at": datetime.now(timezone.utc).isoformat(), "last_email_id": eid}})
+
+def escape_html(s: str) -> str:
+    return (s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+@api.post("/cron/weekly-reports")
+async def cron_weekly_reports(request: Request):
+    # Cron endpoints must ack 2xx immediately; enqueue/background the actual work.
+    auth = request.headers.get("Authorization", "")
+    if not auth.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing auth")
+    token = auth[7:]
+    if not WEBHOOK_CRON_SECRET or not hmac.compare_digest(token, WEBHOOK_CRON_SECRET):
+        raise HTTPException(status_code=401, detail="Invalid cron secret")
+    body = {}
+    try:
+        body = await request.json()
+    except Exception:
+        pass
+    run_id = request.headers.get("X-Webhook-Id") or body.get("run_id") or str(uuid.uuid4())
+    import asyncio
+    asyncio.create_task(_run_weekly_reports_job(run_id))
+    return {"ok": True, "queued": True, "run_id": run_id}
+
+@api.post("/subscriptions/{sid}/send-now")
+async def send_now(sid: str, user: dict = Depends(get_current_user)):
+    sub = await db.subscriptions.find_one({"id": sid}, {"_id": 0})
+    if not sub:
+        raise HTTPException(status_code=404, detail="Not found")
+    titles = [REPORT_TITLES[k] for k in sub.get("report_keys", []) if k in REPORT_TITLES]
+    subject = f"Colecle EAMS reports · {datetime.now(timezone.utc).strftime('%b %d, %Y')}"
+    rows_html = "".join(f"<li>{escape_html(t)}</li>" for t in titles)
+    html = (
+        "<table role='presentation' width='100%' style='font-family:Arial,sans-serif;color:#111'>"
+        f"<tr><td style='padding:24px'><h2 style='color:#f59e0b'>Colecle EAMS Digest</h2>"
+        f"<ul>{rows_html}</ul>"
+        f"<p style='font-size:12px;color:#888'>Sent by {escape_html(EMAIL_FROM_NAME)}. Manage subscription in Reports.</p></td></tr></table>"
+    )
+    eid = await send_report_email(sub["email"], subject, html)
+    await db.subscriptions.update_one({"id": sid}, {"$set": {"last_sent_at": datetime.now(timezone.utc).isoformat(), "last_email_id": eid}})
+    return {"ok": True, "email_id": eid, "dry_run": eid == "dry-run"}
+
+# ---------- LDAP / Directory sign-in (demo) ----------
+LDAP_DOMAIN = "colecle.corp"
+LDAP_USER_MAP = {
+    # samAccountName / uid : local user email
+}
+
+class LdapLoginIn(BaseModel):
+    username: str  # accepts "COLECLE\\user", "user@colecle.corp", or "user"
+    password: str
+
+@api.post("/auth/ldap")
+async def ldap_login(body: LdapLoginIn, response: Response):
+    raw = body.username.strip()
+    if "\\" in raw:
+        _, uname = raw.split("\\", 1)
+    elif "@" in raw:
+        uname = raw.split("@", 1)[0]
+    else:
+        uname = raw
+    uname = uname.lower()
+    # Preview-mode LDAP: authenticate against local users table by matching
+    # the localpart of their email to the samAccountName. Production would
+    # bind against a real LDAP server via python-ldap/ldap3.
+    user = await db.users.find_one({"email": {"$regex": f"^{uname}@", "$options": "i"}})
+    if not user:
+        # or match against LDAP_USER_MAP override
+        target = LDAP_USER_MAP.get(uname)
+        if target: user = await db.users.find_one({"email": target})
+    if not user or not verify_pw(body.password, user["password_hash"]):
+        raise HTTPException(status_code=401, detail="Invalid corporate credentials")
+    token = make_token(user["id"], user["email"], user["role"])
+    response.set_cookie("access_token", token, httponly=True, secure=True, samesite="none", max_age=60*60*24*7, path="/")
+    return {"id": user["id"], "email": user["email"], "name": user["name"], "role": user["role"], "token": token, "auth_method": "ldap-preview"}
 
 app.include_router(api)
 app.add_middleware(

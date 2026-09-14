@@ -1,0 +1,8 @@
+crons:
+  - name: weekly-reports
+    description: "Emails subscribers their weekly Colecle EAMS report bundle every Monday at 08:00 UTC"
+    cron: "0 8 * * 1"
+    endpoint: "{{BASE_URL}}/api/cron/weekly-reports"
+    method: POST
+    # Cron endpoints must ack 2xx immediately; enqueue/background the actual work.
+    enabled: true

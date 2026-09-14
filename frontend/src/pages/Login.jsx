@@ -2,16 +2,18 @@ import React, { useState } from "react";
 import { useAuth } from "@/context/AuthContext";
 import { useBrand } from "@/context/BrandContext";
 import { useNavigate } from "react-router-dom";
+import { api, formatError } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Lock, Mail, ArrowRight } from "lucide-react";
+import { Lock, Mail, ArrowRight, Building2 } from "lucide-react";
 import { toast } from "sonner";
 
 export default function Login() {
   const { login } = useAuth();
   const { brand } = useBrand();
   const nav = useNavigate();
+  const [mode, setMode] = useState("local"); // "local" | "ldap"
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
@@ -19,6 +21,18 @@ export default function Login() {
   const submit = async (e) => {
     e.preventDefault();
     setBusy(true);
+    if (mode === "ldap") {
+      try {
+        const r = await api.post("/auth/ldap", { username: email, password });
+        localStorage.setItem("eams_token", r.data.token);
+        toast.success("Signed in via Corporate Directory");
+        window.location.href = "/";
+      } catch (e2) {
+        toast.error(formatError(e2.response?.data?.detail) || "LDAP sign-in failed");
+        setBusy(false);
+      }
+      return;
+    }
     const r = await login(email, password);
     setBusy(false);
     if (r.ok) { toast.success("Welcome back"); nav("/"); }
@@ -67,11 +81,19 @@ export default function Login() {
             <h2 className="text-3xl heading font-bold text-white mt-1">Welcome back</h2>
             <p className="text-sm text-slate-400 mt-1">Access the {brand.name} EAMS console.</p>
           </div>
+          <div className="flex gap-1 p-1 rounded-md border border-slate-800 bg-slate-900/40" data-testid="login-mode-toggle">
+            <button type="button" onClick={() => setMode("local")} data-testid="mode-local" className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 rounded text-xs mono uppercase tracking-widest ${mode === "local" ? "bg-slate-800 text-white" : "text-slate-400 hover:text-white"}`}>
+              <Mail className="h-3.5 w-3.5" /> Local
+            </button>
+            <button type="button" onClick={() => setMode("ldap")} data-testid="mode-ldap" className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 rounded text-xs mono uppercase tracking-widest ${mode === "ldap" ? "bg-slate-800 text-white" : "text-slate-400 hover:text-white"}`}>
+              <Building2 className="h-3.5 w-3.5" /> Corporate LDAP
+            </button>
+          </div>
           <div className="space-y-2">
-            <Label htmlFor="email" className="text-slate-300">Email</Label>
+            <Label htmlFor="email" className="text-slate-300">{mode === "ldap" ? "Directory username" : "Email"}</Label>
             <div className="relative">
-              <Mail className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-500" />
-              <Input id="email" type="email" required data-testid="login-email" value={email} onChange={(e) => setEmail(e.target.value)} className="pl-9 bg-slate-900/60 border-slate-700 text-white" placeholder="you@company.com" />
+              {mode === "ldap" ? <Building2 className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-500" /> : <Mail className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-500" />}
+              <Input id="email" type={mode === "ldap" ? "text" : "email"} required data-testid="login-email" value={email} onChange={(e) => setEmail(e.target.value)} className="pl-9 bg-slate-900/60 border-slate-700 text-white" placeholder={mode === "ldap" ? "COLECLE\\jsmith or jsmith@colecle.corp" : "you@company.com"} />
             </div>
           </div>
           <div className="space-y-2">
@@ -82,10 +104,12 @@ export default function Login() {
             </div>
           </div>
           <Button type="submit" disabled={busy} data-testid="login-submit" className="w-full h-11 text-black font-semibold" style={{ background: brand.accent }}>
-            {busy ? "Signing in…" : (<span className="inline-flex items-center gap-2">Sign in <ArrowRight className="h-4 w-4" /></span>)}
+            {busy ? "Signing in…" : (<span className="inline-flex items-center gap-2">{mode === "ldap" ? "Sign in with LDAP" : "Sign in"} <ArrowRight className="h-4 w-4" /></span>)}
           </Button>
           <div className="text-xs text-slate-500 pt-2 border-t border-slate-800">
-            Default admin was seeded on first boot. Ask your architect for credentials.
+            {mode === "ldap"
+              ? "Preview binds against a local directory shadow; production will point at your corporate AD/LDAPS server."
+              : "Default admin was seeded on first boot. Ask your architect for credentials."}
           </div>
         </form>
       </div>

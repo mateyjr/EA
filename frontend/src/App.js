@@ -18,6 +18,8 @@ import Risks from "@/pages/Risks";
 import AdminBrand from "@/pages/AdminBrand";
 import Reports from "@/pages/Reports";
 import AuditConsole from "@/pages/AuditConsole";
+import DRCoverage from "@/pages/DRCoverage";
+import CapabilityHeatmap from "@/pages/CapabilityHeatmap";
 
 function ProtectedShell({ children }) {
   const { user } = useAuth();
@@ -52,6 +54,8 @@ export default function App() {
               <Route path="/standards" element={<ProtectedShell><Standards /></ProtectedShell>} />
               <Route path="/risks" element={<ProtectedShell><Risks /></ProtectedShell>} />
               <Route path="/reports" element={<ProtectedShell><Reports /></ProtectedShell>} />
+              <Route path="/dr-coverage" element={<ProtectedShell><DRCoverage /></ProtectedShell>} />
+              <Route path="/capabilities/heatmap" element={<ProtectedShell><CapabilityHeatmap /></ProtectedShell>} />
               <Route path="/admin/audit" element={<ProtectedShell><AuditConsole /></ProtectedShell>} />
               <Route path="/admin/brand" element={<ProtectedShell><AdminBrand /></ProtectedShell>} />
               <Route path="*" element={<Navigate to="/" replace />} />

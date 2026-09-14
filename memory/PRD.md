@@ -1,38 +1,33 @@
 # Colecle System EAMS — PRD
 
 ## Original Problem
-Build "Colecle System EAMS" — full Enterprise Architecture Management System across six mandatory domains (Business, Application, Data, Security, Integration, Technology). Editable brand (name + logo). Distinct color + icon per domain everywhere the domain/repository is referenced.
-
-## Personas
-- Chief / Enterprise Architect (admin)
-- Domain Architects (Business, Application, Data, Security, Integration, Technology)
-- Reviewers, Application/Process Owners, Auditors
+Enterprise Architecture Management System for "Colecle" across six mandatory domains with end-to-end traceability, editable brand, and distinct color+icon per domain everywhere it appears.
 
 ## Implemented (2026-02)
 
 ### Iteration 1 — MVP
-- **Auth**: JWT bcrypt login/logout/me, admin seeded (matey.willy@gmail.com / Colecle123!).
-- **Brand**: `/api/brand` singleton; Admin → Brand Settings updates name/subtitle/logo/accent, propagates to sidebar/topbar/login.
-- **Six domain repositories**: unified `/api/objects` CRUD; each rendered with distinct color+icon (amber/Briefcase, blue/AppWindow, emerald/Database, red/Shield, violet/Network, slate/Server).
-- **Relationships + Traceability**: forward/reverse/both SVG graph, impact analysis grouped by domain.
-- **Governance**: Reviews (7-stage workflow), auto-numbered ADRs, Standards, Risks.
-- **Dashboard**: 6 domain KPI cards + 8 KPI tiles + traceability model banner.
-- **Architecture Map** + **Global Search** across objects/ADRs/standards/risks.
-- **Seed data**: 27 objects + 32 relationships (Instant Payment Processing scenario).
+- JWT auth (admin seeded), editable brand, 6-domain CRUD repositories with distinct color+icon, relationships, forward/reverse traceability + impact analysis, governance suite (Reviews/ADRs/Standards/Risks), dashboard KPIs, Architecture Map, global search.
+- Seed: 27 objects + 32 relationships (Payments scenario).
 
-### Iteration 2 — Advanced Features
-- **Document Uploads**: `/api/objects/{id}/documents` multipart upload (max 15MB), stored base64 in Mongo. Drag & drop UI in new "Documents" tab on every 360° object detail page. Download via signed token query param.
-- **Reports Export**: `/api/reports/{kind}?format=csv|xlsx|pdf` — 10 reports (application-portfolio, technology-eol, business-capabilities, integration-catalogue, data-catalogue, security-controls, risks, adrs, standards, all-objects). PDF via reportlab, XLSX via openpyxl.
-- **Business Process Visualization**: `/api/processes/{id}/flow` walks `has_step` relationships + 3-hop downstream to build layered matrix. Rendered as "Process Flow" tab on process objects — horizontal step ribbon + rows=domains × cols=steps color-coded grid.
-- **Audit Trail Console**: `/api/audit` with filters (domain, action, user_email, free-text q). UI at `/admin/audit` groups events by day, shows action icons (Created/Updated/Deleted/Doc-uploaded) colored per action, per-row Diff expander showing before/after JSON.
+### Iteration 2 — Advanced
+- Document uploads, Reports export (CSV/XLSX/PDF, 10 report types), Business Process visualisation (per-step domain touches grid), Audit Trail Console.
+
+### Iteration 3 — Enterprise Features
+- **Object Storage (Emergent)**: `_storage_put`/`_storage_get` via INTEGRATION_PROXY_URL. Files stored under `colecle-eams/objects/{oid}/{doc-id}.ext`. DB soft-delete flag. Upload limit raised to 200MB.
+- **DR Coverage Dashboard** (`/dr-coverage`): reads `attributes.rto`/`rpo`/`dr_site`/`has_dr` on applications; groups Covered/Partial/Missing, highlights Critical-Missing.
+- **Capability Heatmap** (`/capabilities/heatmap`): L1-L5 × Low/Med/High grid. Sweet Spot (L5-High) and Invest Now (L1-L2 High) callouts.
+- **Scheduled Report Emails**: `/api/subscriptions` CRUD + `/api/cron/weekly-reports` endpoint with Bearer WEBHOOK_CRON_SECRET auth + idempotency via cron_runs. `.emergent/crons.yml` fires every Mon 08:00 UTC. Email uses Emergent-managed Resend (dry-run when EMERGENT_EMAIL_KEY absent, logs to console).
+- **LDAP / Directory Sign-in**: `/api/auth/ldap` accepts `DOMAIN\user`, `user@corp`, or `user`; preview binds against local user shadow (matches localpart of email). Toggle on login page between Local and Corporate LDAP.
 
 ## Backlog
-- P1: LDAP/AD integration + full RBAC roles per PDF spec.
-- P1: File attachments via object storage (S3) instead of Mongo base64 for scale.
-- P2: Business Capability heatmap (maturity × strategic importance).
-- P2: DR Coverage report + RTO/RPO SLA dashboard.
-- P2: React Flow-based Architecture Map with pan/zoom.
+- P1: Wire EMERGENT_EMAIL_KEY for real weekly email delivery.
+- P1: Real LDAP/AD via ldap3 client (needs corporate LDAPS server).
+- P2: DR Coverage: CSV export + editable DR fields inline.
+- P2: Capability heatmap drag-to-move maturity/strategic.
 
 ## Tech
-- Backend: FastAPI + Motor + MongoDB, PyJWT, bcrypt, openpyxl, reportlab.
-- Frontend: React 19 + React Router 7 + Tailwind + shadcn/ui + lucide-react + sonner. Fonts: Outfit + Plus Jakarta Sans + JetBrains Mono. Dark theme.
+- Backend: FastAPI + Motor + MongoDB, PyJWT, bcrypt, openpyxl, reportlab, httpx, requests. Emergent object storage + email proxy.
+- Frontend: React 19 + Tailwind + shadcn/ui + lucide-react + sonner. Outfit + Plus Jakarta Sans + JetBrains Mono. Dark theme.
+
+## Credentials
+Admin: matey.willy@gmail.com / Colecle123! (matches LDAP username `matey.willy@colecle.corp`).
