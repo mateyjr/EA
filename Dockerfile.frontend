@@ -4,8 +4,14 @@ WORKDIR /app
 ARG REACT_APP_BACKEND_URL=https://boteams-test.bot.go.tz
 ENV REACT_APP_BACKEND_URL=$REACT_APP_BACKEND_URL
 
-COPY frontend/package.json frontend/yarn.lock ./
-RUN yarn install --frozen-lockfile
+# Copy manifests. yarn.lock* glob makes the lock file optional
+# (the runner will regenerate it if missing).
+COPY frontend/package.json frontend/yarn.lock* ./
+RUN if [ -f yarn.lock ]; then \
+      yarn install --frozen-lockfile --network-timeout 300000; \
+    else \
+      yarn install --network-timeout 300000; \
+    fi
 
 COPY frontend/ ./
 RUN yarn build

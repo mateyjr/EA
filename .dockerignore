@@ -1,8 +1,5 @@
 **/node_modules
 **/.git
-**/.gitignore
-**/.env
-**/.env.local
 **/*.log
 **/__pycache__
 **/.pytest_cache
@@ -15,6 +12,11 @@
 **/.idea
 tests/
 scripts/
+# Keep .env.example / .env.deploy.example available for docs; ignore real .env files
+.env
+frontend/.env
+backend/.env
 *.md
 !DEPLOYMENT.md
 !README.md
+!.github/**/*.md
